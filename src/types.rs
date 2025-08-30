@@ -17,8 +17,8 @@ pub struct Printer {
 #[serde(rename_all = "camelCase")]
 pub struct PrintAttributes {
     pub file: String,
-    pub orientation: u8,
+    pub orientation: String,
     pub color: ColorMode,
-    pub copies: u8, // 9999 max hota hai
+    pub copies: String, // 9999 max hota hai
     pub paper_format: String,
 }

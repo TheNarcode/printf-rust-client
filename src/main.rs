@@ -1,22 +1,25 @@
+use crate::client::got_event;
 use eventsource_client as es;
+use eventsource_client::Client;
 use futures::TryStreamExt;
-
-use crate::{
-    ipp::{PrinterManager, print},
-    types::PrintAttributes,
-};
 
 pub mod client;
 pub mod ipp;
 pub mod types;
 
-const URL: &str = "https://sse.234892.xyz";
+const URL: &str = "https://archlinux.234892.xyz/event/sse";
 
-// todo: reconnect logic
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = es::ClientBuilder::for_url(URL)?.build();
-    let mut stream = client::event_listener(client);
-    while let Ok(Some(_)) = stream.try_next().await {}
+
+    client
+        .stream()
+        .try_for_each(|event| async {
+            got_event(event).await;
+            Ok(())
+        })
+        .await?;
+
     Ok(())
 }

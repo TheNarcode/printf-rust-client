@@ -1,6 +1,7 @@
 use crate::types::{ColorMode, PrintAttributes, Printer};
 use ipp::prelude::*;
-use std::fs::File;
+use reqwest;
+use std::{fs::File, io::Cursor};
 
 pub struct PrinterManager {
     printers: Vec<Printer>,
@@ -17,7 +18,7 @@ impl PrinterManager {
         }
     }
 
-    pub fn get_next_printer(&mut self, printer_type: ColorMode) -> Option<&Printer> {
+    pub fn get_next_printer(&mut self, printer_type: &ColorMode) -> Option<&Printer> {
         match printer_type {
             ColorMode::Color => {
                 let color_printers: Vec<usize> = self
@@ -65,7 +66,13 @@ pub fn read_config(file_name: &str) -> Vec<Printer> {
 
 pub async fn print(printer: &Printer, attributes: PrintAttributes) {
     let uri: Uri = printer.uri.parse().unwrap();
-    let file = File::open(attributes.file.as_str()).unwrap();
+    let url =
+        "https://pub-badb76cefc404f02a1f1bfa48ad9d871.r2.dev/0282fb6a-74a7-476c-aca1-18ada44593d8";
+
+    let response = reqwest::get(url).await.unwrap();
+    let bytes = response.bytes().await.unwrap();
+
+    let file = Cursor::new(bytes);
     let payload = IppPayload::new(file);
     let builder = IppOperationBuilder::print_job(uri.clone(), payload);
     let client = AsyncIppClient::new(uri);
