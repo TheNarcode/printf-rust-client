@@ -1,7 +1,15 @@
 use eventsource_client as es;
 use futures::TryStreamExt;
 
+use crate::{
+    ipp::{PrinterManager, print},
+    types::PrintAttributes,
+};
+
 pub mod client;
+pub mod ipp;
+pub mod types;
+
 const URL: &str = "https://sse.234892.xyz";
 
 // todo: reconnect logic
