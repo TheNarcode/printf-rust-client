@@ -6,6 +6,15 @@ pub enum ColorMode {
     Monochrome,
 }
 
+impl ColorMode {
+    pub fn to_val(&self) -> &str {
+        match self {
+            ColorMode::Color => "color",
+            ColorMode::Monochrome => "monochrome",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Printer {
@@ -19,6 +28,8 @@ pub struct PrintAttributes {
     pub file: String,
     pub orientation: String,
     pub color: ColorMode,
-    pub copies: String, // 9999 max hota hai
+    pub copies: String,
     pub paper_format: String,
+    pub page_ranges: String,
+    pub number_up: String,
 }

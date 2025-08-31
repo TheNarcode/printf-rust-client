@@ -1,7 +1,11 @@
 use crate::types::{ColorMode, PrintAttributes, Printer};
 use ipp::prelude::*;
 use reqwest;
-use std::{fs::File, io::Cursor};
+use std::{
+    env,
+    fs::File,
+    io::{Cursor, Read},
+};
 
 pub struct PrinterManager {
     printers: Vec<Printer>,
@@ -60,22 +64,42 @@ impl PrinterManager {
 
 pub fn read_config(file_name: &str) -> Vec<Printer> {
     let file = File::open(file_name).unwrap();
-    let deserialized_config: Vec<Printer> = serde_json::from_reader(file).unwrap();
-    deserialized_config
+    serde_json::from_reader(file).unwrap()
 }
 
 pub async fn print(printer: &Printer, attributes: PrintAttributes) {
-    let uri: Uri = printer.uri.parse().unwrap();
-    let url =
-        "https://pub-badb76cefc404f02a1f1bfa48ad9d871.r2.dev/0282fb6a-74a7-476c-aca1-18ada44593d8";
-
-    let response = reqwest::get(url).await.unwrap();
-    let bytes = response.bytes().await.unwrap();
-
-    let file = Cursor::new(bytes);
+    let printer_uri: Uri = printer.uri.parse().unwrap();
+    let file = download_file(attributes.file.clone()).await;
     let payload = IppPayload::new(file);
-    let builder = IppOperationBuilder::print_job(uri.clone(), payload);
-    let client = AsyncIppClient::new(uri);
-    let response = client.send(builder.build()).await.unwrap();
-    println!("IPP status code: {}", response.header().status_code());
+
+    let print_job = IppOperationBuilder::print_job(printer_uri.clone(), payload)
+        .attributes(build_ipp_attributes(attributes))
+        .build();
+
+    AsyncIppClient::new(printer_uri)
+        .send(print_job)
+        .await
+        .unwrap();
+}
+
+async fn download_file(file_id: String) -> impl Read {
+    let base_url = env::var("R2_PUB_URL").unwrap();
+    let file_url = format!("{}{}", base_url, file_id);
+    let response = reqwest::get(file_url).await.unwrap();
+    let bytes = response.bytes().await.unwrap();
+    Cursor::new(bytes)
+}
+
+fn build_ipp_attributes(attributes: PrintAttributes) -> Vec<IppAttribute> {
+    [
+        ("orientation-requested", attributes.orientation),
+        ("print-color-mode", attributes.color.to_val().to_string()),
+        ("copies", attributes.copies),
+        ("media", attributes.paper_format),
+        ("page-ranges", attributes.page_ranges),
+        ("number-up", attributes.number_up),
+    ]
+    .into_iter()
+    .map(|(name, value)| IppAttribute::new(name, value.parse().unwrap()))
+    .collect()
 }
