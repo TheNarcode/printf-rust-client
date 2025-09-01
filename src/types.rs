@@ -18,7 +18,6 @@ impl ColorMode {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Printer {
-    pub printer_type: ColorMode,
     pub uri: String,
 }
 
@@ -32,4 +31,14 @@ pub struct PrintAttributes {
     pub paper_format: String,
     pub page_ranges: String,
     pub number_up: String,
+    pub sides: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Config {
+    pub event_url: String,
+    pub s3_base_url: String,
+    pub monochrome_printers: Vec<Printer>,
+    pub color_printers: Vec<Printer>,
 }

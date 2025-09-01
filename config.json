@@ -1,14 +1,14 @@
-[
-  {
-    "printerType": "Color",
-    "uri": "http://localhost:631/printers/Virtual_PDF_Printer"
-  },
-  {
-    "printerType": "Monochrome",
-    "uri": "http://localhost:631/printers/Virtual_PDF_Printer"
-  },
-  {
-    "printerType": "Color",
-    "uri": "http://localhost:631/printers/Virtual_PDF_Printer"
-  }
-]
+{
+  "eventUrl": "",
+  "s3BaseUrl": "",
+  "monochromePrinters": [
+    {
+      "uri": ""
+    }
+  ],
+  "colorPrinters": [
+    {
+      "uri": ""
+    }
+  ]
+}

@@ -1,74 +1,45 @@
-use crate::types::{ColorMode, PrintAttributes, Printer};
+use crate::{
+    read_config,
+    types::{ColorMode, PrintAttributes},
+};
 use ipp::prelude::*;
 use reqwest;
-use std::{
-    env,
-    fs::File,
-    io::{Cursor, Read},
-};
+use std::io::{Cursor, Read};
 
 pub struct PrinterManager {
-    printers: Vec<Printer>,
-    color_counter: usize,
-    bw_counter: usize,
+    cindex: usize,
+    clen: usize,
+    bwindex: usize,
+    bwlen: usize,
 }
 
 impl PrinterManager {
-    pub fn new(file_name: &str) -> Self {
+    pub fn new(clen: usize, bwlen: usize) -> Self {
         Self {
-            printers: read_config(file_name),
-            color_counter: 0,
-            bw_counter: 0,
+            cindex: 0,
+            clen,
+            bwindex: 0,
+            bwlen,
         }
     }
 
-    pub fn get_next_printer(&mut self, printer_type: &ColorMode) -> Option<&Printer> {
+    pub fn get_next_printer(&mut self, printer_type: &ColorMode) -> usize {
         match printer_type {
             ColorMode::Color => {
-                let color_printers: Vec<usize> = self
-                    .printers
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, p)| p.printer_type == ColorMode::Color)
-                    .map(|(i, _)| i)
-                    .collect();
-
-                if !color_printers.is_empty() {
-                    let printer = &self.printers[color_printers[self.color_counter]];
-                    self.color_counter = (self.color_counter + 1) % color_printers.len();
-                    Some(printer)
-                } else {
-                    None
-                }
+                let current_index = self.cindex;
+                self.cindex = (self.cindex + 1) % self.clen;
+                current_index
             }
             ColorMode::Monochrome => {
-                let bw_printers: Vec<usize> = self
-                    .printers
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, p)| p.printer_type == ColorMode::Monochrome)
-                    .map(|(i, _)| i)
-                    .collect();
-
-                if !bw_printers.is_empty() {
-                    let printer = &self.printers[bw_printers[self.bw_counter]];
-                    self.bw_counter = (self.bw_counter + 1) % bw_printers.len();
-                    Some(printer)
-                } else {
-                    None
-                }
+                let current_index = self.bwindex;
+                self.bwindex = (self.bwindex + 1) % self.bwlen;
+                current_index
             }
         }
     }
 }
 
-pub fn read_config(file_name: &str) -> Vec<Printer> {
-    let file = File::open(file_name).unwrap();
-    serde_json::from_reader(file).unwrap()
-}
-
-pub async fn print(printer: &Printer, attributes: PrintAttributes) {
-    let printer_uri: Uri = printer.uri.parse().unwrap();
+pub async fn print_job(printer_uri: Uri, attributes: PrintAttributes) {
     let file = download_file(attributes.file.clone()).await;
     let payload = IppPayload::new(file);
 
@@ -83,7 +54,7 @@ pub async fn print(printer: &Printer, attributes: PrintAttributes) {
 }
 
 async fn download_file(file_id: String) -> impl Read {
-    let base_url = env::var("R2_PUB_URL").unwrap();
+    let base_url = read_config("config.json").s3_base_url;
     let file_url = format!("{}{}", base_url, file_id);
     let response = reqwest::get(file_url).await.unwrap();
     let bytes = response.bytes().await.unwrap();
@@ -98,6 +69,7 @@ fn build_ipp_attributes(attributes: PrintAttributes) -> Vec<IppAttribute> {
         ("media", attributes.paper_format),
         ("page-ranges", attributes.page_ranges),
         ("number-up", attributes.number_up),
+        ("sides", attributes.sides),
     ]
     .into_iter()
     .map(|(name, value)| IppAttribute::new(name, value.parse().unwrap()))
