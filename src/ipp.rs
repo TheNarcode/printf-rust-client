@@ -70,6 +70,7 @@ fn build_ipp_attributes(attributes: PrintAttributes) -> Vec<IppAttribute> {
         ("page-ranges", attributes.page_ranges),
         ("number-up", attributes.number_up),
         ("sides", attributes.sides),
+        // ("print-scaling", "fit".to_string()), // todo: add as attribute
     ]
     .into_iter()
     .map(|(name, value)| IppAttribute::new(name, value.parse().unwrap()))

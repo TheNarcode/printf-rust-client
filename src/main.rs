@@ -29,8 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let SSE::Event(e) = event {
                 if let "update" = e.event_type.as_str() {
-                    let json_string: String = serde_json::from_str(&e.data).unwrap();
-                    let attributes: PrintAttributes = serde_json::from_str(&json_string).unwrap();
+                    let attributes: PrintAttributes = serde_json::from_str(&e.data).unwrap();
                     let mut pm_guard = pm.lock().unwrap();
 
                     let printer_uri = match &attributes.color {
