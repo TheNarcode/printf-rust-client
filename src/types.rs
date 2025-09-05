@@ -32,6 +32,8 @@ pub struct PrintAttributes {
     pub page_ranges: String,
     pub number_up: String,
     pub sides: String,
+    pub document_format: String,
+    pub print_scaling: String,
 }
 
 #[derive(Debug, Deserialize)]

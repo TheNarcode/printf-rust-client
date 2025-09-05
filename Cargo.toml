@@ -12,3 +12,7 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tokio-util = "0.7.16"
 reqwest = { version = "0.11", features = ["blocking"] }
+ftail = "0.3.0"
+log = "0.4.27"
+dirs = "6.0.0"
+

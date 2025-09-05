@@ -2,9 +2,10 @@ use crate::{
     read_config,
     types::{ColorMode, PrintAttributes},
 };
+use futures::io::Cursor;
 use ipp::prelude::*;
 use reqwest;
-use std::io::{Cursor, Read};
+use tokio_util::bytes::Bytes;
 
 pub struct PrinterManager {
     cindex: usize,
@@ -39,26 +40,28 @@ impl PrinterManager {
     }
 }
 
-pub async fn print_job(printer_uri: Uri, attributes: PrintAttributes) {
-    let file = download_file(attributes.file.clone()).await;
-    let payload = IppPayload::new(file);
+pub async fn print_job(
+    printer_uri: Uri,
+    attributes: PrintAttributes,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let file = download_file(attributes.file.clone()).await?;
+    let payload = IppPayload::new_async(file);
 
     let print_job = IppOperationBuilder::print_job(printer_uri.clone(), payload)
         .attributes(build_ipp_attributes(attributes))
         .build();
 
-    AsyncIppClient::new(printer_uri)
-        .send(print_job)
-        .await
-        .unwrap();
+    AsyncIppClient::new(printer_uri).send(print_job).await?;
+
+    Ok(())
 }
 
-async fn download_file(file_id: String) -> impl Read {
-    let base_url = read_config("config.json").s3_base_url;
+async fn download_file(file_id: String) -> Result<Cursor<Bytes>, Box<dyn std::error::Error>> {
+    let base_url = read_config("config.json")?.s3_base_url;
     let file_url = format!("{}{}", base_url, file_id);
-    let response = reqwest::get(file_url).await.unwrap();
-    let bytes = response.bytes().await.unwrap();
-    Cursor::new(bytes)
+    let response = reqwest::get(file_url).await?;
+    let bytes = response.bytes().await?;
+    Ok(Cursor::new(bytes))
 }
 
 fn build_ipp_attributes(attributes: PrintAttributes) -> Vec<IppAttribute> {
@@ -70,7 +73,8 @@ fn build_ipp_attributes(attributes: PrintAttributes) -> Vec<IppAttribute> {
         ("page-ranges", attributes.page_ranges),
         ("number-up", attributes.number_up),
         ("sides", attributes.sides),
-        // ("print-scaling", "fit".to_string()), // todo: add as attribute
+        ("document-format", attributes.document_format),
+        ("print-scaling", attributes.print_scaling),
     ]
     .into_iter()
     .map(|(name, value)| IppAttribute::new(name, value.parse().unwrap()))
