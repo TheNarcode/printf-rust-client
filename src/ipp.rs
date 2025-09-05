@@ -57,7 +57,7 @@ pub async fn print_job(
 }
 
 async fn download_file(file_id: String) -> Result<Cursor<Bytes>, Box<dyn std::error::Error>> {
-    let base_url = read_config("config.json")?.s3_base_url;
+    let base_url = read_config()?.s3_base_url;
     let file_url = format!("{}{}", base_url, file_id);
     let response = reqwest::get(file_url).await?;
     let bytes = response.bytes().await?;

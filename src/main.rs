@@ -1,5 +1,6 @@
 use std::fs::{self, File};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::ipp::{PrinterManager, print_job};
 use crate::types::{ColorMode, Config, PrintAttributes};
@@ -15,7 +16,7 @@ pub mod types;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let logs_dir = dirs::home_dir().unwrap().join(".local/share/printf/logs");
+    let logs_dir = dirs::data_local_dir().unwrap().join("printf").join("logs");
     fs::create_dir_all(&logs_dir)?;
 
     Ftail::new()
@@ -24,8 +25,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     log::info!("printf client started");
 
-    let config = read_config("config.json")?;
-    let client = es::ClientBuilder::for_url(&config.event_url)?.build();
+    let config = read_config()?;
+
+    let client = es::ClientBuilder::for_url(&config.event_url)?
+        .reconnect(
+            es::ReconnectOptions::reconnect(true)
+                .retry_initial(false)
+                .delay(Duration::from_secs(1))
+                .backoff_factor(2)
+                .delay_max(Duration::from_secs(60))
+                .build(),
+        )
+        .build();
 
     let pm = Arc::new(Mutex::new(PrinterManager::new(
         config.color_printers.len(),
@@ -72,7 +83,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub fn read_config(file_name: &str) -> Result<Config, Box<dyn std::error::Error>> {
-    let file = File::open(file_name)?;
+pub fn read_config() -> Result<Config, Box<dyn std::error::Error>> {
+    let config_dir = dirs::config_local_dir()
+        .unwrap()
+        .join("printf")
+        .join("config.json");
+
+    let file = File::open(&config_dir)?;
     Ok(serde_json::from_reader(file)?)
 }
