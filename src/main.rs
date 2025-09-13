@@ -2,9 +2,8 @@ use std::fs::{self, File};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::ipp::{PrinterManager, print_job};
-use crate::types::{ColorMode, Config, PrintAttributes};
-use ::ipp::prelude::Uri;
+use crate::ipp::{PrinterManager, get_ipp_printers, print_job};
+use crate::types::{Config, PrintAttributes};
 use eventsource_client::{self as es};
 use eventsource_client::{Client, SSE};
 use ftail::Ftail;
@@ -38,10 +37,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .build();
 
-    let pm = Arc::new(Mutex::new(PrinterManager::new(
-        config.color_printers.len(),
-        config.monochrome_printers.len(),
-    )));
+    let printers = get_ipp_printers().await?;
+    let pm = Arc::new(Mutex::new(PrinterManager::new(printers)));
 
     log::info!("printer manager initialized");
 
@@ -57,20 +54,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let attributes: PrintAttributes = serde_json::from_str(&e.data).unwrap();
                     let mut pm_guard = pm.lock().unwrap();
 
-                    let printer_uri = match &attributes.color {
-                        &ColorMode::Color => {
-                            let printer = pm_guard.get_next_printer(&attributes.color);
-                            config.color_printers[printer].uri.parse::<Uri>().unwrap()
-                        }
-                        &ColorMode::Monochrome => {
-                            let printer = pm_guard.get_next_printer(&attributes.color);
-                            config.color_printers[printer].uri.parse::<Uri>().unwrap()
-                        }
-                    };
+                    let printer = pm_guard.get_printer(&attributes.color).unwrap();
 
-                    log::info!("using printer {} for print", printer_uri);
+                    log::info!("using printer {} for print", printer.uri);
 
-                    print_job(printer_uri, attributes).await.unwrap();
+                    print_job(printer.uri.parse().unwrap(), attributes)
+                        .await
+                        .unwrap();
 
                     log::info!("print job successful");
                 }

@@ -19,6 +19,7 @@ impl ColorMode {
 #[serde(rename_all = "camelCase")]
 pub struct Printer {
     pub uri: String,
+    pub color_mode: ColorMode,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -41,6 +42,4 @@ pub struct PrintAttributes {
 pub struct Config {
     pub event_url: String,
     pub s3_base_url: String,
-    pub monochrome_printers: Vec<Printer>,
-    pub color_printers: Vec<Printer>,
 }
