@@ -25,7 +25,7 @@ pub struct Printer {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PrintAttributes {
-    pub file: String,
+    pub file_id: String,
     pub orientation: String,
     pub color: ColorMode,
     pub copies: String,

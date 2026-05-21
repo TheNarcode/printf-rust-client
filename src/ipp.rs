@@ -53,7 +53,7 @@ pub async fn print_job(
     printer_uri: Uri,
     attributes: PrintAttributes,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let file = download_file(attributes.file.clone()).await?;
+    let file = download_file(attributes.file_id.clone()).await?;
     let payload = IppPayload::new_async(file);
 
     let print_job = IppOperationBuilder::print_job(printer_uri.clone(), payload)

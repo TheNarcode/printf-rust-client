@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let pm = pm.clone();
 
             if let SSE::Event(e) = event {
-                if let "update" = e.event_type.as_str() {
+                if let "message" = e.event_type.as_str() {
                     log::info!("got new print command");
 
                     let attributes: PrintAttributes = match serde_json::from_str(&e.data) {
