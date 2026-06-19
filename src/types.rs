@@ -42,4 +42,6 @@ pub struct PrintAttributes {
 pub struct Config {
     pub event_url: String,
     pub s3_base_url: String,
+    #[serde(default)]
+    pub webhook_url: Option<String>,
 }

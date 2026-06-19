@@ -57,11 +57,93 @@ pub async fn print_job(
     let payload = IppPayload::new_async(file);
 
     let print_job = IppOperationBuilder::print_job(printer_uri.clone(), payload)
-        .attributes(build_ipp_attributes(attributes))
+        .attributes(build_ipp_attributes(attributes.clone()))
         .build();
 
-    AsyncIppClient::new(printer_uri).send(print_job).await?;
+    let response = AsyncIppClient::new(printer_uri.clone()).send(print_job).await?;
 
+    let mut job_id = None;
+    if let Some(group) = response.attributes().groups_of(DelimiterTag::JobAttributes).next() {
+        if let Some(attr) = group.attributes().get("job-id") {
+            if let Some(&id) = attr.value().as_integer() {
+                job_id = Some(id);
+            }
+        }
+    }
+
+    if let Some(job_id) = job_id {
+        log::info!("Job ID: {}, starting status polling...", job_id);
+
+        let client = AsyncIppClient::new(printer_uri.clone());
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            let get_attrs = IppOperationBuilder::get_job_attributes(printer_uri.clone(), job_id).build();
+            match client.send(get_attrs).await {
+                Ok(resp) => {
+                    let mut job_state = None;
+                    if let Some(group) = resp.attributes().groups_of(DelimiterTag::JobAttributes).next() {
+                        if let Some(attr) = group.attributes().get("job-state") {
+                            if let Some(&state) = attr.value().as_enum() {
+                                job_state = Some(state);
+                            }
+                        }
+                    }
+
+                    if let Some(state) = job_state {
+                        log::info!("Job {} state: {}", job_id, state);
+                        // IPP Job States:
+                        // 3 = pending, 4 = pending-held, 5 = processing, 6 = processing-stopped
+                        // 7 = canceled, 8 = aborted, 9 = completed
+                        if state == 9 {
+                            log::info!("Job {} completed successfully", job_id);
+                            if let Err(e) = notify_webhook(&attributes.file_id).await {
+                                log::error!("Failed to notify webhook: {}", e);
+                            }
+                            break;
+                        } else if state == 7 || state == 8 {
+                            log::error!("Job {} was canceled or aborted (state: {})", job_id, state);
+                            break;
+                        }
+                    } else {
+                        log::warn!("Could not retrieve job state for job {}", job_id);
+                    }
+                }
+                Err(e) => {
+                    log::error!("Error polling job status for job {}: {}", job_id, e);
+                }
+            }
+        }
+    } else {
+        log::warn!("No job ID received in print response; skipping status polling.");
+    }
+
+    Ok(())
+}
+
+async fn notify_webhook(file_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let config = read_config()?;
+    if let Some(ref webhook_url) = config.webhook_url {
+        log::info!("Notifying webhook: {} for file: {}", webhook_url, file_id);
+
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({
+            "event": "print.completed",
+            "id": file_id
+        });
+
+        let response = client.post(webhook_url)
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("Webhook returned status code: {}", response.status()).into());
+        }
+        log::info!("Webhook notified successfully");
+    } else {
+        log::info!("No webhook URL configured; skipping notification.");
+    }
     Ok(())
 }
 
