@@ -97,6 +97,7 @@ pub async fn print_job(
                         // 7 = canceled, 8 = aborted, 9 = completed
                         if state == 9 {
                             log::info!("Job {} completed successfully", job_id);
+                            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                             if let Err(e) = notify_webhook(&attributes.file_id).await {
                                 log::error!("Failed to notify webhook: {}", e);
                             }

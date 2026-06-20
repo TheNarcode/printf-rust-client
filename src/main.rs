@@ -56,39 +56,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 if let "message" = e.event_type.as_str() {
                     log::info!("got new print command");
 
-                    let attributes: PrintAttributes = match serde_json::from_str(&e.data) {
-                        Ok(attr) => attr,
+                    let attributes_list: Vec<PrintAttributes> = match serde_json::from_str(&e.data) {
+                        Ok(list) => list,
                         Err(err) => {
                             log::error!("failed to parse print attributes: {}", err);
                             return Ok(());
                         }
                     };
 
-                    let printer = {
-                        let mut pm_guard = pm.lock().unwrap();
-                        match pm_guard.get_printer(&attributes.color) {
-                            Some(p) => p,
-                            None => {
-                                log::error!(
-                                    "no printer found for color mode: {:?}",
-                                    attributes.color
-                                );
-                                return Ok(());
+                    for attributes in attributes_list {
+                        let printer = {
+                            let mut pm_guard = pm.lock().unwrap();
+                            match pm_guard.get_printer(&attributes.color) {
+                                Some(p) => p,
+                                None => {
+                                    log::error!(
+                                        "no printer found for color mode: {:?}",
+                                        attributes.color
+                                    );
+                                    continue;
+                                }
                             }
-                        }
-                    };
+                        };
 
-                    tokio::spawn(async move {
-                        log::info!("using printer {} for print", printer.uri);
+                        tokio::spawn(async move {
+                            log::info!("using printer {} for print", printer.uri);
 
-                        match printer.uri.parse() {
-                            Ok(uri) => match print_job(uri, attributes).await {
-                                Ok(_) => log::info!("print job successful"),
-                                Err(e) => log::error!("print job failed: {}", e),
-                            },
-                            Err(e) => log::error!("failed to parse printer URI: {}", e),
-                        }
-                    });
+                            match printer.uri.parse() {
+                                Ok(uri) => match print_job(uri, attributes).await {
+                                    Ok(_) => log::info!("print job successful"),
+                                    Err(e) => log::error!("print job failed: {}", e),
+                                },
+                                Err(e) => log::error!("failed to parse printer URI: {}", e),
+                            }
+                        });
+                    }
                 }
             }
 
