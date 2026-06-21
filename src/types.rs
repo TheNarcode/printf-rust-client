@@ -40,7 +40,6 @@ pub struct PrintAttributes {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Config {
-    pub event_url: String,
     pub s3_base_url: String,
     #[serde(default)]
     pub webhook_url: Option<String>,

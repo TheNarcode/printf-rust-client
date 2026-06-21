@@ -5,11 +5,9 @@ use std::time::Duration;
 
 use crate::ipp::{PrinterManager, get_ipp_printers, print_job};
 use crate::types::{Config, PrintAttributes};
-use eventsource_client::{self as es};
-use eventsource_client::{Client, SSE};
 use ftail::Ftail;
-use futures::TryStreamExt;
 use log::LevelFilter;
+use redis::AsyncCommands;
 
 pub mod ipp;
 pub mod types;
@@ -29,38 +27,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     log::info!("printf client started");
 
-    let config = read_config()?;
-
-    let client = es::ClientBuilder::for_url(&config.event_url)?
-        .reconnect(
-            es::ReconnectOptions::reconnect(true)
-                .retry_initial(true)
-                .delay(Duration::from_secs(1))
-                .backoff_factor(2)
-                .delay_max(Duration::from_secs(60))
-                .build(),
-        )
-        .build();
+    let _config = read_config()?;
 
     let printers = get_ipp_printers().await?;
     let pm = Arc::new(Mutex::new(PrinterManager::new(printers)));
 
     log::info!("printer manager initialized");
 
-    client
-        .stream()
-        .try_for_each(|event| async {
-            let pm = pm.clone();
+    let redis_url = "rediss://default:gQAAAAAAAgIbAAIgcDFlMTUzZTAyM2M5NDk0MjQ1ODA4NGQ5NjgwOWI2Mzk4YQ@aware-leopard-131611.upstash.io:6379";
+    let redis_client = redis::Client::open(redis_url)?;
+    loop {
+        let mut con = match redis_client.get_multiplexed_async_connection().await {
+            Ok(c) => {
+                log::info!("connected to redis queue");
+                c
+            }
+            Err(e) => {
+                log::error!("failed to connect to redis: {}", e);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
 
-            if let SSE::Event(e) = event {
-                if let "message" = e.event_type.as_str() {
-                    log::info!("got new print command");
+        loop {
+            match con.brpop::<_, Option<(String, String)>>("printf_queue", 0.0).await {
+                Ok(Some((_key, data))) => {
+                    log::info!("got new print command from queue");
 
-                    let attributes_list: Vec<PrintAttributes> = match serde_json::from_str(&e.data) {
+                    let attributes_list: Vec<PrintAttributes> = match serde_json::from_str(&data) {
                         Ok(list) => list,
                         Err(err) => {
                             log::error!("failed to parse print attributes: {}", err);
-                            return Ok(());
+                            continue;
                         }
                     };
 
@@ -92,13 +90,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         });
                     }
                 }
+                Ok(None) => {
+                    log::warn!("BRPOP returned None unexpectedly");
+                }
+                Err(e) => {
+                    log::error!("redis connection lost: {}", e);
+                    break;
+                }
             }
+        }
 
-            Ok(())
-        })
-        .await?;
-
-    Ok(())
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
 }
 
 pub fn read_config() -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
