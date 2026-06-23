@@ -1,10 +1,8 @@
-use crate::{
-    read_config,
-    types::{ColorMode, PrintAttributes, Printer},
-};
+use std::sync::Arc;
+
+use crate::types::{ColorMode, Config, PrintAttributes, Printer};
 use futures::io::Cursor;
 use ipp::prelude::*;
-use reqwest;
 use tokio_util::bytes::Bytes;
 
 pub struct PrinterManager {
@@ -52,8 +50,10 @@ impl PrinterManager {
 pub async fn print_job(
     printer_uri: Uri,
     attributes: PrintAttributes,
+    config: Arc<Config>,
+    http_client: Arc<reqwest::Client>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let file = download_file(attributes.file_id.clone()).await?;
+    let file = download_file(attributes.file_id.clone(), &config, &http_client).await?;
     let payload = IppPayload::new_async(file);
 
     let print_job = IppOperationBuilder::print_job(printer_uri.clone(), payload)
@@ -74,12 +74,12 @@ pub async fn print_job(
     if let Some(job_id) = job_id {
         log::info!("Job ID: {}, starting status polling...", job_id);
 
-        let client = AsyncIppClient::new(printer_uri.clone());
+        let ipp_client = AsyncIppClient::new(printer_uri.clone());
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
             let get_attrs = IppOperationBuilder::get_job_attributes(printer_uri.clone(), job_id).build();
-            match client.send(get_attrs).await {
+            match ipp_client.send(get_attrs).await {
                 Ok(resp) => {
                     let mut job_state = None;
                     if let Some(group) = resp.attributes().groups_of(DelimiterTag::JobAttributes).next() {
@@ -92,51 +92,47 @@ pub async fn print_job(
 
                     if let Some(state) = job_state {
                         log::info!("Job {} state: {}", job_id, state);
-                        // IPP Job States:
-                        // 3 = pending, 4 = pending-held, 5 = processing, 6 = processing-stopped
-                        // 7 = canceled, 8 = aborted, 9 = completed
                         if state == 9 {
                             log::info!("Job {} completed successfully", job_id);
-                            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                            if let Err(e) = notify_webhook(&attributes.file_id).await {
+                            if let Err(e) = notify_webhook(&attributes.file_id, &config, &http_client).await {
                                 log::error!("Failed to notify webhook: {}", e);
                             }
-                            break;
+                            return Ok(());
                         } else if state == 7 || state == 8 {
-                            log::error!("Job {} was canceled or aborted (state: {})", job_id, state);
-                            break;
+                            return Err(format!("Job {} was canceled or aborted (state: {})", job_id, state).into());
                         }
                     } else {
                         log::warn!("Could not retrieve job state for job {}", job_id);
                     }
                 }
                 Err(e) => {
-                    log::error!("Error polling job status for job {}: {}", job_id, e);
+                    return Err(format!("Error polling job status for job {}: {}", job_id, e).into());
                 }
             }
         }
     } else {
-        log::warn!("No job ID received in print response; skipping status polling.");
+        return Err("No job ID received in print response".into());
     }
-
-    Ok(())
 }
 
-async fn notify_webhook(file_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let config = read_config()?;
+async fn notify_webhook(
+    file_id: &str,
+    config: &Config,
+    http_client: &reqwest::Client,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(ref webhook_url) = config.webhook_url {
         log::info!("Notifying webhook: {} for file: {}", webhook_url, file_id);
 
-        let client = reqwest::Client::new();
         let payload = serde_json::json!({
             "event": "print.completed",
             "id": file_id
         });
 
-        let response = client.post(webhook_url)
-            .json(&payload)
-            .send()
-            .await?;
+        let mut req = http_client.post(webhook_url).json(&payload);
+        if let Some(ref key) = config.printf_key {
+            req = req.header("X-Printf-Key", key.as_str());
+        }
+        let response = req.send().await?;
 
         if !response.status().is_success() {
             return Err(format!("Webhook returned status code: {}", response.status()).into());
@@ -150,10 +146,11 @@ async fn notify_webhook(file_id: &str) -> Result<(), Box<dyn std::error::Error +
 
 async fn download_file(
     file_id: String,
+    config: &Config,
+    http_client: &reqwest::Client,
 ) -> Result<Cursor<Bytes>, Box<dyn std::error::Error + Send + Sync>> {
-    let base_url = read_config()?.s3_base_url;
-    let file_url = format!("{}{}", base_url, file_id);
-    let response = reqwest::get(file_url).await?;
+    let file_url = format!("{}{}", config.s3_base_url, file_id);
+    let response = http_client.get(&file_url).send().await?;
     let bytes = response.bytes().await?;
     Ok(Cursor::new(bytes))
 }

@@ -1,6 +1,6 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq, Clone, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
 pub enum ColorMode {
     Color,
     Monochrome,
@@ -22,7 +22,7 @@ pub struct Printer {
     pub color_mode: ColorMode,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PrintAttributes {
     pub file_id: String,
@@ -40,7 +40,10 @@ pub struct PrintAttributes {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Config {
+    pub redis_url: String,
     pub s3_base_url: String,
     #[serde(default)]
     pub webhook_url: Option<String>,
+    #[serde(default)]
+    pub printf_key: Option<String>,
 }
