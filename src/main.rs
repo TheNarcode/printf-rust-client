@@ -147,25 +147,38 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
                                     }
                                 };
 
+                                let has_color = attributes_list.iter().any(|a| a.color == crate::types::ColorMode::Color);
+                                let has_mono = attributes_list.iter().any(|a| a.color == crate::types::ColorMode::Monochrome);
+
+                                let (color_printer, mono_printer, media_source) = {
+                                    let mut pm_guard = pm.lock().await;
+                                    pm_guard.get_printers_for_order(has_color, has_mono)
+                                };
+
                                 for attributes in attributes_list {
-                                    let printer = {
-                                        let mut pm_guard = pm.lock().await;
-                                        match pm_guard.get_printer(&attributes.color) {
-                                            Some(p) => p,
+                                    let printer = match attributes.color {
+                                        crate::types::ColorMode::Color => match &color_printer {
+                                            Some(p) => p.clone(),
                                             None => {
-                                                log::error!(
-                                                    "no printer found for color mode: {:?}",
-                                                    attributes.color
-                                                );
+                                                log::error!("no color printer found for order");
                                                 update_job_status(&redis_client, &attributes, "Failed").await;
                                                 continue;
                                             }
-                                        }
+                                        },
+                                        crate::types::ColorMode::Monochrome => match &mono_printer {
+                                            Some(p) => p.clone(),
+                                            None => {
+                                                log::error!("no monochrome printer found for order");
+                                                update_job_status(&redis_client, &attributes, "Failed").await;
+                                                continue;
+                                            }
+                                        },
                                     };
 
                                     let config = Arc::clone(&config);
                                     let http_client = Arc::clone(&http_client);
                                     let redis_client = redis_client.clone();
+                                    let media_source = media_source.clone();
 
                                     update_job_status(&redis_client, &attributes, "Processing").await;
 
@@ -173,7 +186,7 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
                                         log::info!("using printer {} for print", printer.uri);
 
                                         let failed = match printer.uri.parse() {
-                                            Ok(uri) => match print_job(uri, attributes.clone(), config, http_client).await {
+                                            Ok(uri) => match print_job(uri, attributes.clone(), media_source, config, http_client).await {
                                                 Ok(_) => { log::info!("print job successful"); false }
                                                 Err(e) => { log::error!("print job failed: {}", e); true }
                                             },

@@ -9,6 +9,7 @@ pub struct PrinterManager {
     printers: Vec<Printer>,
     color_counter: usize,
     monochrome_counter: usize,
+    order_counter: usize,
 }
 
 impl PrinterManager {
@@ -17,7 +18,62 @@ impl PrinterManager {
             printers,
             color_counter: 0,
             monochrome_counter: 0,
+            order_counter: 0,
         }
+    }
+
+    pub fn get_printers_for_order(
+        &mut self,
+        has_color: bool,
+        has_mono: bool,
+    ) -> (Option<Printer>, Option<Printer>, Option<String>) {
+        self.order_counter += 1;
+
+        let color_printer = if has_color {
+            let color_printers: Vec<_> = self
+                .printers
+                .iter()
+                .filter(|p| p.color_mode == ColorMode::Color)
+                .collect();
+            if !color_printers.is_empty() {
+                let p = color_printers[self.color_counter % color_printers.len()].clone();
+                self.color_counter += 1;
+                Some(p)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mono_printer = if has_mono {
+            let mono_printers: Vec<_> = self
+                .printers
+                .iter()
+                .filter(|p| p.color_mode == ColorMode::Monochrome)
+                .collect();
+            if !mono_printers.is_empty() {
+                let p = mono_printers[self.monochrome_counter % mono_printers.len()].clone();
+                self.monochrome_counter += 1;
+                Some(p)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let media_source = if self.order_counter > 2 {
+            if self.order_counter % 2 == 1 {
+                Some("cas-1".to_string())
+            } else {
+                Some("cas-2".to_string())
+            }
+        } else {
+            None
+        };
+
+        (color_printer, mono_printer, media_source)
     }
 
     pub fn get_printer(&mut self, color_mode: &ColorMode) -> Option<Printer> {
@@ -50,6 +106,7 @@ impl PrinterManager {
 pub async fn print_job(
     printer_uri: Uri,
     attributes: PrintAttributes,
+    media_source: Option<String>,
     config: Arc<Config>,
     http_client: Arc<reqwest::Client>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -57,7 +114,7 @@ pub async fn print_job(
     let payload = IppPayload::new_async(file);
 
     let print_job = IppOperationBuilder::print_job(printer_uri.clone(), payload)
-        .attributes(build_ipp_attributes(attributes.clone()))
+        .attributes(build_ipp_attributes(attributes.clone(), media_source))
         .build();
 
     let response = AsyncIppClient::new(printer_uri.clone()).send(print_job).await?;
@@ -158,8 +215,8 @@ async fn download_file(
     Ok(Cursor::new(bytes))
 }
 
-fn build_ipp_attributes(attributes: PrintAttributes) -> Vec<IppAttribute> {
-    [
+fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String>) -> Vec<IppAttribute> {
+    let mut attrs: Vec<IppAttribute> = [
         ("orientation-requested", attributes.orientation),
         ("print-color-mode", attributes.color.to_val().to_string()),
         ("copies", attributes.copies),
@@ -179,7 +236,17 @@ fn build_ipp_attributes(attributes: PrintAttributes) -> Vec<IppAttribute> {
             None
         }
     })
-    .collect()
+    .collect();
+
+    if let Some(source) = media_source {
+        use std::collections::BTreeMap;
+        let media_col = IppValue::Collection(BTreeMap::from([
+            ("media-source".to_string(), IppValue::Keyword(source))
+        ]));
+        attrs.push(IppAttribute::new("media-col", media_col));
+    }
+
+    attrs
 }
 
 pub async fn get_ipp_printers() -> Result<Vec<Printer>, Box<dyn std::error::Error + Send + Sync>> {
