@@ -47,3 +47,12 @@ pub struct Config {
     #[serde(default)]
     pub printf_key: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct JobInfo {
+    pub file_id: String,
+    pub attributes: PrintAttributes,
+    pub status: String,
+    pub updated_at: String,
+}

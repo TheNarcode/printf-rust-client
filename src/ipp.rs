@@ -92,6 +92,9 @@ pub async fn print_job(
 
                     if let Some(state) = job_state {
                         log::info!("Job {} state: {}", job_id, state);
+                        // IPP Job States:
+                        // 3 = pending, 4 = pending-held, 5 = processing, 6 = processing-stopped
+                        // 7 = canceled, 8 = aborted, 9 = completed
                         if state == 9 {
                             log::info!("Job {} completed successfully", job_id);
                             if let Err(e) = notify_webhook(&attributes.file_id, &config, &http_client).await {
@@ -164,11 +167,18 @@ fn build_ipp_attributes(attributes: PrintAttributes) -> Vec<IppAttribute> {
         ("page-ranges", attributes.page_ranges),
         ("number-up", attributes.number_up),
         ("sides", attributes.sides),
-        ("document-format", attributes.document_format),
         ("print-scaling", attributes.print_scaling),
+        ("document-format", "application/octet-stream".to_string()),
     ]
     .into_iter()
-    .map(|(name, value)| IppAttribute::new(name, value.parse().unwrap()))
+    .filter(|(_, value)| !value.is_empty())
+    .filter_map(|(name, value)| match value.parse() {
+        Ok(v) => Some(IppAttribute::new(name, v)),
+        Err(e) => {
+            log::warn!("Skipping IPP attribute '{}' with value '{}': {}", name, value, e);
+            None
+        }
+    })
     .collect()
 }
 
@@ -198,6 +208,8 @@ pub async fn get_ipp_printers() -> Result<Vec<Printer>, Box<dyn std::error::Erro
 
         printers.push(Printer { uri, color_mode });
     }
+
+    println!("{:#?}", printers);
 
     Ok(printers)
 }
