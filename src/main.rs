@@ -183,10 +183,10 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
                                     update_job_status(&redis_client, &attributes, "Processing").await;
 
                                     tokio::spawn(async move {
-                                        log::info!("using printer {} for print", printer.uri);
+                                        log::info!("using printer {} ({}) for print", printer.name, printer.uri);
 
                                         let failed = match printer.uri.parse() {
-                                            Ok(uri) => match print_job(uri, attributes.clone(), media_source, config, http_client).await {
+                                            Ok(uri) => match print_job(uri, printer.name.clone(), attributes.clone(), media_source, config, http_client).await {
                                                 Ok(_) => { log::info!("print job successful"); false }
                                                 Err(e) => { log::error!("print job failed: {}", e); true }
                                             },
@@ -350,6 +350,23 @@ async fn close_window(window: tauri::Window) -> Result<(), String> {
     window.close().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn get_stats(month: Option<String>, state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
+    let mut url = "https://print.aditya.stream/stats".to_string();
+    if let Some(m) = month {
+        if !m.is_empty() {
+            url = format!("https://print.aditya.stream/stats?month={}", m);
+        }
+    }
+    match state.http_client.get(&url).send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(text) => Ok(text),
+            Err(e) => Err(format!("Failed to read stats text: {}", e)),
+        },
+        Err(e) => Err(format!("Failed to fetch stats: {}", e)),
+    }
+}
+
 fn main() {
     let logs_dir = dirs::data_local_dir().unwrap().join("printf").join("logs");
     let config_path = get_config_path().expect("failed to get config path");
@@ -397,7 +414,8 @@ fn main() {
             reprint_job,
             minimize_window,
             maximize_window,
-            close_window
+            close_window,
+            get_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

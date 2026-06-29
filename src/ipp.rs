@@ -105,6 +105,7 @@ impl PrinterManager {
 
 pub async fn print_job(
     printer_uri: Uri,
+    printer_name: String,
     attributes: PrintAttributes,
     media_source: Option<String>,
     config: Arc<Config>,
@@ -154,7 +155,7 @@ pub async fn print_job(
                         // 7 = canceled, 8 = aborted, 9 = completed
                         if state == 9 {
                             log::info!("Job {} completed successfully", job_id);
-                            if let Err(e) = notify_webhook(&attributes.file_id, &config, &http_client).await {
+                            if let Err(e) = notify_webhook(&attributes.file_id, &printer_name, &config, &http_client).await {
                                 log::error!("Failed to notify webhook: {}", e);
                             }
                             return Ok(());
@@ -177,6 +178,7 @@ pub async fn print_job(
 
 async fn notify_webhook(
     file_id: &str,
+    printer_name: &str,
     config: &Config,
     http_client: &reqwest::Client,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -185,7 +187,8 @@ async fn notify_webhook(
 
         let payload = serde_json::json!({
             "event": "print.completed",
-            "id": file_id
+            "id": file_id,
+            "printerName": printer_name
         });
 
         let mut req = http_client.post(webhook_url).json(&payload);
@@ -273,7 +276,13 @@ pub async fn get_ipp_printers() -> Result<Vec<Printer>, Box<dyn std::error::Erro
             .value()
             .to_string();
 
-        printers.push(Printer { uri, color_mode });
+        let name = group
+            .attributes()
+            .get("printer-name")
+            .map(|attr| attr.value().to_string())
+            .unwrap_or_else(|| uri.clone());
+
+        printers.push(Printer { uri, name, color_mode });
     }
 
     println!("{:#?}", printers);

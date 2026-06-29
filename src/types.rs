@@ -19,6 +19,7 @@ impl ColorMode {
 #[serde(rename_all = "camelCase")]
 pub struct Printer {
     pub uri: String,
+    pub name: String,
     pub color_mode: ColorMode,
 }
 

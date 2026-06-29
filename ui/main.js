@@ -22,7 +22,8 @@ let updateInterval = null;
 async function init() {
     await checkClientStatus();
     await fetchJobs();
-    
+    await fetchStatistics();
+
     updateInterval = setInterval(async () => {
         await checkClientStatus();
         await fetchJobs();
@@ -37,9 +38,11 @@ async function init() {
     tabJobs?.addEventListener('click', () => switchTab('jobs'));
     tabStats?.addEventListener('click', () => switchTab('stats'));
 
+    document.getElementById('refresh-stats-btn')?.addEventListener('click', fetchStatistics);
+
     monthSelect?.addEventListener('change', (e) => {
         selectedMonth = e.target.value;
-        calculateStatistics(currentJobs);
+        fetchStatistics();
     });
 }
 
@@ -90,6 +93,7 @@ async function handleToggleClient() {
         }
         await checkClientStatus();
         await fetchJobs();
+        await fetchStatistics();
     } catch (error) {
         console.error('Failed to toggle client:', error);
         alert(`Error: ${error}`);
@@ -103,119 +107,68 @@ async function fetchJobs() {
         const jobs = await invoke('get_jobs');
         currentJobs = jobs;
         renderJobs(jobs);
-        calculateStatistics(jobs);
     } catch (error) {
         console.error('Failed to fetch jobs:', error);
     }
 }
 
-function calculateJobPages(job) {
-    const copies = parseInt(job.attributes.copies, 10) || 1;
-    const pageRanges = job.attributes.pageRanges || '';
-    
-    let pageCount = 1;
-    if (pageRanges && pageRanges.trim() !== '') {
-        const parts = pageRanges.split(',');
-        let count = 0;
-        parts.forEach(part => {
-            const range = part.trim().split('-');
-            if (range.length === 2) {
-                const start = parseInt(range[0], 10);
-                const end = parseInt(range[1], 10);
-                if (!isNaN(start) && !isNaN(end) && end >= start) {
-                    count += (end - start + 1);
-                }
-            } else if (range.length === 1) {
-                const page = parseInt(range[0], 10);
-                if (!isNaN(page)) {
-                    count += 1;
-                }
-            }
-        });
-        if (count > 0) {
-            pageCount = count;
+async function fetchStatistics() {
+    try {
+        let monthParam = selectedMonth;
+        if (monthParam === 'current') {
+            const now = new Date();
+            monthParam = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        } else if (monthParam === 'all') {
+            monthParam = null;
         }
+
+        const statsJson = await invoke('get_stats', { month: monthParam });
+        const stats = JSON.parse(statsJson);
+
+        const count1sMono = stats["b/w single sided"]?.pages || 0;
+        const count2sMono = stats["b/w double sided"]?.pages || 0;
+        const count1sColor = stats["color single sided"]?.pages || 0;
+        const count2sColor = stats["color double sided"]?.pages || 0;
+
+        const price1sMono = count1sMono * 3;
+        const price2sMono = count2sMono * 2;
+        const price1sColor = count1sColor * 6;
+        const price2sColor = count2sColor * 6;
+
+        const net1sMono = price1sMono * 0.975;
+        const net2sMono = price2sMono * 0.975;
+        const net1sColor = price1sColor * 0.975;
+        const net2sColor = price2sColor * 0.975;
+
+        const totalCount = count1sMono + count2sMono + count1sColor + count2sColor;
+        const totalPrice = price1sMono + price2sMono + price1sColor + price2sColor;
+        const totalNet = net1sMono + net2sMono + net1sColor + net2sColor;
+        const vendorPayable = 2 * (totalPrice - totalNet);
+
+        document.getElementById('stat-1s-mono-count').textContent = count1sMono;
+        document.getElementById('stat-1s-mono-price').textContent = `₹${price1sMono.toFixed(2)}`;
+        document.getElementById('stat-1s-mono-net').textContent = `₹${net1sMono.toFixed(2)}`;
+
+        document.getElementById('stat-2s-mono-count').textContent = count2sMono;
+        document.getElementById('stat-2s-mono-price').textContent = `₹${price2sMono.toFixed(2)}`;
+        document.getElementById('stat-2s-mono-net').textContent = `₹${net2sMono.toFixed(2)}`;
+
+        document.getElementById('stat-1s-color-count').textContent = count1sColor;
+        document.getElementById('stat-1s-color-price').textContent = `₹${price1sColor.toFixed(2)}`;
+        document.getElementById('stat-1s-color-net').textContent = `₹${net1sColor.toFixed(2)}`;
+
+        document.getElementById('stat-2s-color-count').textContent = count2sColor;
+        document.getElementById('stat-2s-color-price').textContent = `₹${price2sColor.toFixed(2)}`;
+        document.getElementById('stat-2s-color-net').textContent = `₹${net2sColor.toFixed(2)}`;
+
+        document.getElementById('stat-total-count').textContent = totalCount;
+        document.getElementById('stat-total-price').textContent = `₹${totalPrice.toFixed(2)}`;
+        document.getElementById('stat-total-net').textContent = `₹${totalNet.toFixed(2)}`;
+
+        document.getElementById('stat-vendor-payable').textContent = `₹${vendorPayable.toFixed(2)}`;
+    } catch (error) {
+        console.error('Failed to fetch statistics:', error);
     }
-    return pageCount * copies;
-}
-
-function calculateStatistics(jobs) {
-    let filteredJobs = jobs;
-    if (selectedMonth === 'current') {
-        const now = new Date();
-        const currentYearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-        filteredJobs = jobs.filter(job => {
-            if (!job.updatedAt) return true;
-            return job.updatedAt.startsWith(currentYearMonth);
-        });
-    } else if (selectedMonth !== 'all') {
-        filteredJobs = jobs.filter(job => {
-            if (!job.updatedAt) return false;
-            return job.updatedAt.startsWith(selectedMonth);
-        });
-    }
-
-    let count1sMono = 0;
-    let count2sMono = 0;
-    let count1sColor = 0;
-    let count2sColor = 0;
-
-    filteredJobs.forEach(job => {
-        const pages = calculateJobPages(job);
-        const isColor = job.attributes.color === 'Color' || job.attributes.color === 'color';
-        const isTwoSided = job.attributes.sides && job.attributes.sides.startsWith('two-sided');
-
-        if (isColor) {
-            if (isTwoSided) {
-                count2sColor += pages;
-            } else {
-                count1sColor += pages;
-            }
-        } else {
-            if (isTwoSided) {
-                count2sMono += pages;
-            } else {
-                count1sMono += pages;
-            }
-        }
-    });
-
-    const price1sMono = count1sMono * 3;
-    const price2sMono = count2sMono * 2;
-    const price1sColor = count1sColor * 10;
-    const price2sColor = count2sColor * 8;
-
-    const net1sMono = price1sMono * 0.975;
-    const net2sMono = price2sMono * 0.975;
-    const net1sColor = price1sColor * 0.975;
-    const net2sColor = price2sColor * 0.975;
-
-    const totalCount = count1sMono + count2sMono + count1sColor + count2sColor;
-    const totalPrice = price1sMono + price2sMono + price1sColor + price2sColor;
-    const totalNet = net1sMono + net2sMono + net1sColor + net2sColor;
-    const vendorPayable = 2 * (totalPrice - totalNet);
-
-    document.getElementById('stat-1s-mono-count').textContent = count1sMono;
-    document.getElementById('stat-1s-mono-price').textContent = `₹${price1sMono.toFixed(2)}`;
-    document.getElementById('stat-1s-mono-net').textContent = `₹${net1sMono.toFixed(2)}`;
-
-    document.getElementById('stat-2s-mono-count').textContent = count2sMono;
-    document.getElementById('stat-2s-mono-price').textContent = `₹${price2sMono.toFixed(2)}`;
-    document.getElementById('stat-2s-mono-net').textContent = `₹${net2sMono.toFixed(2)}`;
-
-    document.getElementById('stat-1s-color-count').textContent = count1sColor;
-    document.getElementById('stat-1s-color-price').textContent = `₹${price1sColor.toFixed(2)}`;
-    document.getElementById('stat-1s-color-net').textContent = `₹${net1sColor.toFixed(2)}`;
-
-    document.getElementById('stat-2s-color-count').textContent = count2sColor;
-    document.getElementById('stat-2s-color-price').textContent = `₹${price2sColor.toFixed(2)}`;
-    document.getElementById('stat-2s-color-net').textContent = `₹${net2sColor.toFixed(2)}`;
-
-    document.getElementById('stat-total-count').textContent = totalCount;
-    document.getElementById('stat-total-price').textContent = `₹${totalPrice.toFixed(2)}`;
-    document.getElementById('stat-total-net').textContent = `₹${totalNet.toFixed(2)}`;
-    
-    document.getElementById('stat-vendor-payable').textContent = `₹${vendorPayable.toFixed(2)}`;
 }
 
 function renderJobs(jobs) {
@@ -231,11 +184,11 @@ function renderJobs(jobs) {
 
     jobs.forEach(job => {
         const statusClass = `status-${job.status.toLowerCase()}`;
-        
+
         const row = document.createElement('div');
         row.className = 'job-row';
         row.dataset.fileId = job.fileId;
-        
+
         row.innerHTML = `
             <div class="spec-item">
                 <span class="job-label">File ID</span>
@@ -274,7 +227,7 @@ function renderJobs(jobs) {
     });
 
     jobsList.innerHTML = newListContainer.innerHTML;
-    
+
     jobsList.querySelectorAll('.reprint-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
             const fileId = e.target.dataset.id;
