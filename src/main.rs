@@ -14,6 +14,8 @@ use tokio::sync::Mutex;
 pub mod ipp;
 pub mod types;
 
+const BASE_URL: &str = "https://printfs.thenarcode.workers.dev";
+
 pub struct AppState {
     pub config: Arc<Config>,
     pub http_client: Arc<reqwest::Client>,
@@ -352,10 +354,10 @@ async fn close_window(window: tauri::Window) -> Result<(), String> {
 
 #[tauri::command]
 async fn get_stats(month: Option<String>, state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
-    let mut url = "https://print.aditya.stream/stats".to_string();
+    let mut url = format!("{}/stats", BASE_URL);
     if let Some(m) = month {
         if !m.is_empty() {
-            url = format!("https://print.aditya.stream/stats?month={}", m);
+            url = format!("{}/stats?month={}", BASE_URL, m);
         }
     }
     match state.http_client.get(&url).send().await {
@@ -369,7 +371,7 @@ async fn get_stats(month: Option<String>, state: tauri::State<'_, Arc<AppState>>
 
 #[tauri::command]
 async fn get_completed_orders(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
-    let url = "https://print.aditya.stream/webhook/completed";
+    let url = format!("{}/webhook/completed", BASE_URL);
     let mut req = state.http_client.get(url);
     if let Some(ref key) = state.config.printf_key {
         req = req.header("x-printf-key", key.as_str());
@@ -385,7 +387,7 @@ async fn get_completed_orders(state: tauri::State<'_, Arc<AppState>>) -> Result<
 
 #[tauri::command]
 async fn mark_order_collected(order_id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
-    let url = "https://print.aditya.stream/webhook/collect";
+    let url = format!("{}/webhook/collect", BASE_URL);
     let payload = serde_json::json!({ "orderId": order_id });
     let mut req = state.http_client.post(url).json(&payload);
     if let Some(ref key) = state.config.printf_key {
