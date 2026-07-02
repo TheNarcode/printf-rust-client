@@ -10,12 +10,16 @@ const emptyState = document.getElementById('empty-state');
 
 const tabJobs = document.getElementById('tab-jobs');
 const tabStats = document.getElementById('tab-stats');
+const tabCompleted = document.getElementById('tab-completed');
 const pageJobs = document.getElementById('page-jobs');
 const pageStats = document.getElementById('page-stats');
+const pageCompleted = document.getElementById('page-completed');
 const monthSelect = document.getElementById('stats-month-select');
 
 let isClientRunning = false;
 let currentJobs = [];
+let completedOrders = [];
+let currentCompletedSearch = '';
 let selectedMonth = 'current';
 let updateInterval = null;
 
@@ -37,26 +41,42 @@ async function init() {
 
     tabJobs?.addEventListener('click', () => switchTab('jobs'));
     tabStats?.addEventListener('click', () => switchTab('stats'));
+    tabCompleted?.addEventListener('click', () => switchTab('completed'));
 
     document.getElementById('refresh-stats-btn')?.addEventListener('click', fetchStatistics);
+    document.getElementById('refresh-completed-btn')?.addEventListener('click', fetchCompletedOrders);
+    
+    document.getElementById('completed-search-input')?.addEventListener('input', (e) => {
+        currentCompletedSearch = e.target.value;
+        renderCompletedOrders();
+    });
 
     monthSelect?.addEventListener('change', (e) => {
         selectedMonth = e.target.value;
         fetchStatistics();
     });
+
+    await fetchCompletedOrders();
 }
 
 function switchTab(tab) {
+    tabJobs?.classList.remove('active');
+    tabStats?.classList.remove('active');
+    tabCompleted?.classList.remove('active');
+    
+    pageJobs?.classList.remove('active');
+    pageStats?.classList.remove('active');
+    pageCompleted?.classList.remove('active');
+
     if (tab === 'jobs') {
-        tabJobs.classList.add('active');
-        tabStats.classList.remove('active');
-        pageJobs.classList.add('active');
-        pageStats.classList.remove('active');
-    } else {
-        tabStats.classList.add('active');
-        tabJobs.classList.remove('active');
-        pageStats.classList.add('active');
-        pageJobs.classList.remove('active');
+        tabJobs?.classList.add('active');
+        pageJobs?.classList.add('active');
+    } else if (tab === 'stats') {
+        tabStats?.classList.add('active');
+        pageStats?.classList.add('active');
+    } else if (tab === 'completed') {
+        tabCompleted?.classList.add('active');
+        pageCompleted?.classList.add('active');
     }
 }
 
@@ -244,6 +264,82 @@ function renderJobs(jobs) {
             }
         });
     });
+}
+
+async function fetchCompletedOrders() {
+    const list = document.getElementById('completed-orders-list');
+    if (!list) return;
+
+    try {
+        const jsonStr = await invoke('get_completed_orders');
+        completedOrders = JSON.parse(jsonStr) || [];
+        renderCompletedOrders();
+    } catch (error) {
+        console.error('Failed to fetch completed orders:', error);
+        list.innerHTML = `<div class="empty-state">
+            <p>Error loading completed orders.</p>
+        </div>`;
+    }
+}
+
+function renderCompletedOrders() {
+    const list = document.getElementById('completed-orders-list');
+    if (!list) return;
+
+    const filtered = completedOrders.filter(order => {
+        if (!currentCompletedSearch) return true;
+        return order.id.toString().toLowerCase().includes(currentCompletedSearch.toLowerCase());
+    });
+
+    if (filtered.length === 0) {
+        if (completedOrders.length === 0) {
+            list.innerHTML = `<div class="empty-state">
+                <p>No completed orders found.</p>
+            </div>`;
+        } else {
+            list.innerHTML = `<div class="empty-state">
+                <p>No orders match your search.</p>
+            </div>`;
+        }
+        return;
+    }
+
+    list.innerHTML = '';
+    filtered.forEach(order => {
+        const row = document.createElement('div');
+        row.className = 'completed-order-row';
+        
+        const infoDiv = document.createElement('div');
+        infoDiv.className = 'job-info';
+        infoDiv.innerHTML = `
+            <div class="job-id">Order #${order.id}</div>
+            <div class="job-meta">Ready for pickup</div>
+        `;
+        
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'job-actions';
+        
+        const collectBtn = document.createElement('button');
+        collectBtn.className = 'btn btn-primary btn-sm';
+        collectBtn.textContent = 'Mark Collected';
+        collectBtn.onclick = () => markCollected(order.id);
+        
+        actionsDiv.appendChild(collectBtn);
+        
+        row.appendChild(infoDiv);
+        row.appendChild(actionsDiv);
+        list.appendChild(row);
+    });
+}
+
+async function markCollected(orderId) {
+    try {
+        await invoke('mark_order_collected', { orderId: orderId.toString() });
+        await fetchCompletedOrders();
+    } catch (error) {
+        console.error('Failed to mark order as collected:', error);
+        alert('Failed to mark order as collected. Please try again.');
+    }
 }
 
 document.addEventListener('DOMContentLoaded', init);

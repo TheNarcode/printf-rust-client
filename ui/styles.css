@@ -12,7 +12,7 @@
     --destructive-fg: hsl(210, 40%, 98%);
     --secondary: hsl(210, 40%, 96.1%);
     --secondary-hover: hsl(210, 40%, 92%);
-    
+
     --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
     --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05);
     --font-body: 'Inter', sans-serif;
@@ -28,8 +28,8 @@ body {
     background-color: transparent;
     color: var(--text-main);
     font-family: var(--font-body);
-    min-height: 100vh;
-    overflow-x: hidden;
+    height: 100vh;
+    overflow: hidden;
     user-select: none;
     -webkit-font-smoothing: antialiased;
 }
@@ -37,7 +37,7 @@ body {
 .app-container {
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
+    height: 100vh;
     background-color: var(--bg-base);
     border: 1px solid var(--border);
     border-radius: 0.75rem;
@@ -118,8 +118,15 @@ body {
 }
 
 @keyframes pulse-green {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.4;
+    }
 }
 
 .btn {
@@ -216,6 +223,7 @@ body {
 /* Main Content */
 .main-content {
     flex: 1;
+    overflow-y: auto;
     padding: 2.5rem 2rem;
     max-width: 1100px;
     width: 100%;
@@ -503,10 +511,21 @@ body {
     border-radius: 50%;
 }
 
-.dot-mono-1 { background-color: hsl(215.4, 16.3%, 65%); }
-.dot-mono-2 { background-color: hsl(222.2, 84%, 15%); }
-.dot-color-1 { background-color: hsl(217.2, 91.2%, 59.8%); }
-.dot-color-2 { background-color: hsl(262.1, 83.3%, 57.8%); }
+.dot-mono-1 {
+    background-color: hsl(215.4, 16.3%, 65%);
+}
+
+.dot-mono-2 {
+    background-color: hsl(222.2, 84%, 15%);
+}
+
+.dot-color-1 {
+    background-color: hsl(217.2, 91.2%, 59.8%);
+}
+
+.dot-color-2 {
+    background-color: hsl(262.1, 83.3%, 57.8%);
+}
 
 .stat-val {
     font-size: 1rem;
@@ -659,6 +678,30 @@ body {
 }
 
 @keyframes pulse-soft {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.6;
+    }
+}
+
+.completed-order-row {
+    padding: 1.25rem 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    transition: background-color 0.15s ease;
+}
+
+.completed-order-row:last-child {
+    border-bottom: none;
+}
+
+.completed-order-row:hover {
+    background-color: var(--bg-body);
 }

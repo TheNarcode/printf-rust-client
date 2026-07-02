@@ -185,6 +185,31 @@
                     </div>
                 </section>
             </div>
+            <!-- Completed Orders View -->
+            <div id="page-completed" class="page-view">
+                <section class="section-jobs">
+                    <div class="completed-orders-section">
+                        <div class="section-header" style="margin-bottom: 1rem;">
+                            <h2>Completed Orders</h2>
+                            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                <input type="text" id="completed-search-input" placeholder="Search Order ID..."
+                                    style="padding: 0.35rem 0.75rem; border: 1px solid var(--border); border-radius: 0.375rem; font-size: 0.875rem; outline: none; width: 200px;">
+                                <button id="refresh-completed-btn" class="btn btn-primary btn-sm"
+                                    title="Refresh Completed Orders">
+                                    Refresh
+                                </button>
+                            </div>
+                        </div>
+                        <div class="jobs-list-container">
+                            <div id="completed-orders-list" class="jobs-list">
+                                <div class="empty-state">
+                                    <p>Loading completed orders...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
         </main>
 
         <footer class="app-footer">
@@ -208,6 +233,14 @@
                         <line x1="6" y1="20" x2="6" y2="14" />
                     </svg>
                     Statistics
+                </button>
+                <button class="nav-tab" id="tab-completed">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="9 11 12 14 22 4"></polyline>
+                        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+                    </svg>
+                    Completed
                 </button>
             </div>
         </footer>

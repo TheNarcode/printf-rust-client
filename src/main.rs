@@ -367,6 +367,39 @@ async fn get_stats(month: Option<String>, state: tauri::State<'_, Arc<AppState>>
     }
 }
 
+#[tauri::command]
+async fn get_completed_orders(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
+    let url = "https://print.aditya.stream/webhook/completed";
+    let mut req = state.http_client.get(url);
+    if let Some(ref key) = state.config.printf_key {
+        req = req.header("x-printf-key", key.as_str());
+    }
+    match req.send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(text) => Ok(text),
+            Err(e) => Err(format!("Failed to read response text: {}", e)),
+        },
+        Err(e) => Err(format!("Failed to fetch completed orders: {}", e)),
+    }
+}
+
+#[tauri::command]
+async fn mark_order_collected(order_id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
+    let url = "https://print.aditya.stream/webhook/collect";
+    let payload = serde_json::json!({ "orderId": order_id });
+    let mut req = state.http_client.post(url).json(&payload);
+    if let Some(ref key) = state.config.printf_key {
+        req = req.header("x-printf-key", key.as_str());
+    }
+    match req.send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(text) => Ok(text),
+            Err(e) => Err(format!("Failed to read response text: {}", e)),
+        },
+        Err(e) => Err(format!("Failed to mark order as collected: {}", e)),
+    }
+}
+
 fn main() {
     let logs_dir = dirs::data_local_dir().unwrap().join("printf").join("logs");
     let config_path = get_config_path().expect("failed to get config path");
@@ -415,7 +448,9 @@ fn main() {
             minimize_window,
             maximize_window,
             close_window,
-            get_stats
+            get_stats,
+            get_completed_orders,
+            mark_order_collected
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
