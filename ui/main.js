@@ -22,8 +22,18 @@ let completedOrders = [];
 let currentCompletedSearch = '';
 let selectedMonth = 'current';
 let updateInterval = null;
+let availablePrinters = [];
+
+async function fetchPrinters() {
+    try {
+        availablePrinters = await invoke('get_available_printers');
+    } catch (e) {
+        console.error('Failed to fetch printers:', e);
+    }
+}
 
 async function init() {
+    await fetchPrinters();
     await checkClientStatus();
     await fetchJobs();
     await fetchStatistics();
@@ -122,11 +132,24 @@ async function handleToggleClient() {
     }
 }
 
+function jobsAreDifferent(oldJobs, newJobs) {
+    if (!oldJobs || !newJobs) return true;
+    if (oldJobs.length !== newJobs.length) return true;
+    for (let i = 0; i < oldJobs.length; i++) {
+        const o = oldJobs[i];
+        const n = newJobs[i];
+        if (o.fileId !== n.fileId || o.status !== n.status) return true;
+    }
+    return false;
+}
+
 async function fetchJobs() {
     try {
         const jobs = await invoke('get_jobs');
-        currentJobs = jobs;
-        renderJobs(jobs);
+        if (jobsAreDifferent(currentJobs, jobs)) {
+            currentJobs = jobs;
+            renderJobs(jobs);
+        }
     } catch (error) {
         console.error('Failed to fetch jobs:', error);
     }
@@ -237,6 +260,15 @@ function renderJobs(jobs) {
                 <span class="spec-val">${job.attributes.sides || 'one-sided'}</span>
             </div>
             <div class="job-actions">
+                ${job.status.toLowerCase() === 'stuck' ? `
+                    <select class="custom-select requeue-select" data-id="${job.fileId}" required>
+                        <option value="" disabled selected>Select Printer</option>
+                        ${availablePrinters.map(p => `<option value="${p.uri}">${p.name}</option>`).join('')}
+                    </select>
+                    <button class="btn btn-primary requeue-btn" data-id="${job.fileId}">
+                        Requeue
+                    </button>
+                ` : ''}
                 <button class="btn btn-reprint reprint-btn" data-id="${job.fileId}">
                     Reprint Job
                 </button>
@@ -261,6 +293,32 @@ function renderJobs(jobs) {
                 alert(`Reprint failed: ${error}`);
                 btn.disabled = false;
                 btn.textContent = 'Reprint Job';
+            }
+        });
+    });
+
+    jobsList.querySelectorAll('.requeue-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const fileId = e.target.dataset.id;
+            const row = e.target.closest('.job-row');
+            const select = row.querySelector('.requeue-select');
+            const printerUri = select.value;
+            
+            if (!printerUri) {
+                alert('Please select a printer to requeue to.');
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = 'Queuing...';
+            try {
+                await invoke('requeue_to_printer', { fileId, printerUri });
+                await fetchJobs();
+            } catch (error) {
+                console.error('Requeue failed:', error);
+                alert(`Requeue failed: ${error}`);
+                btn.disabled = false;
+                btn.textContent = 'Requeue';
             }
         });
     });

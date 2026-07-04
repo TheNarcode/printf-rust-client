@@ -404,6 +404,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    gap: 0.5rem;
 }
 
 /* Statistics Controls */
@@ -413,11 +414,11 @@ body {
     gap: 1rem;
 }
 
-.month-select {
+.custom-select {
     font-family: var(--font-body);
     font-size: 0.875rem;
     font-weight: 500;
-    color: var(--text-main);
+    color: #000000;
     background-color: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: 0.5rem;
@@ -432,11 +433,19 @@ body {
     transition: all 0.15s ease;
 }
 
-.month-select:hover {
+.custom-select:invalid {
+    color: var(--text-muted);
+}
+
+.custom-select option {
+    color: #000000;
+}
+
+.custom-select:hover {
     border-color: var(--border-hover);
 }
 
-.month-select:focus {
+.custom-select:focus {
     outline: none;
     border-color: var(--primary);
 }

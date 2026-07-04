@@ -18,4 +18,4 @@ redis = { version = "0.25.4", features = ["tokio-comp", "tokio-rustls-comp"] }
 tauri = { version = "2", features = ["wry"] }
 
 [build-dependencies]
-tauri-build = "2"
+tauri-build = { version = "2", features = [] }

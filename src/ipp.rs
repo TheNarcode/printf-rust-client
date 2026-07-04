@@ -133,6 +133,7 @@ pub async fn print_job(
         log::info!("Job ID: {}, starting status polling...", job_id);
 
         let ipp_client = AsyncIppClient::new(printer_uri.clone());
+        let mut pending_seconds = 0;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
@@ -161,6 +162,16 @@ pub async fn print_job(
                             return Ok(());
                         } else if state == 7 || state == 8 {
                             return Err(format!("Job {} was canceled or aborted (state: {})", job_id, state).into());
+                        } else if state == 3 {
+                            pending_seconds += 1;
+                            if pending_seconds >= 30 {
+                                log::warn!("Job {} stuck in pending for 30s, returning PendingTimeout", job_id);
+                                let cancel_op = IppOperationBuilder::cancel_job(printer_uri.clone(), job_id).build();
+                                let _ = ipp_client.send(cancel_op).await;
+                                return Err("PendingTimeout: Job stuck in pending state for 30 seconds".into());
+                            }
+                        } else {
+                            pending_seconds = 0;
                         }
                     } else {
                         log::warn!("Could not retrieve job state for job {}", job_id);

@@ -158,23 +158,31 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
                                 };
 
                                 for attributes in attributes_list {
-                                    let printer = match attributes.color {
-                                        crate::types::ColorMode::Color => match &color_printer {
-                                            Some(p) => p.clone(),
-                                            None => {
-                                                log::error!("no color printer found for order");
-                                                update_job_status(&redis_client, &attributes, "Failed").await;
-                                                continue;
-                                            }
-                                        },
-                                        crate::types::ColorMode::Monochrome => match &mono_printer {
-                                            Some(p) => p.clone(),
-                                            None => {
-                                                log::error!("no monochrome printer found for order");
-                                                update_job_status(&redis_client, &attributes, "Failed").await;
-                                                continue;
-                                            }
-                                        },
+                                    let printer = if let Some(target) = &attributes.target_printer {
+                                        crate::types::Printer {
+                                            uri: target.clone(),
+                                            name: target.clone(),
+                                            color_mode: attributes.color.clone(),
+                                        }
+                                    } else {
+                                        match attributes.color {
+                                            crate::types::ColorMode::Color => match &color_printer {
+                                                Some(p) => p.clone(),
+                                                None => {
+                                                    log::error!("no color printer found for order");
+                                                    update_job_status(&redis_client, &attributes, "Failed").await;
+                                                    continue;
+                                                }
+                                            },
+                                            crate::types::ColorMode::Monochrome => match &mono_printer {
+                                                Some(p) => p.clone(),
+                                                None => {
+                                                    log::error!("no monochrome printer found for order");
+                                                    update_job_status(&redis_client, &attributes, "Failed").await;
+                                                    continue;
+                                                }
+                                            },
+                                        }
                                     };
 
                                     let config = Arc::clone(&config);
@@ -189,14 +197,26 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
 
                                         let failed = match printer.uri.parse() {
                                             Ok(uri) => match print_job(uri, printer.name.clone(), attributes.clone(), media_source, config, http_client).await {
-                                                Ok(_) => { log::info!("print job successful"); false }
-                                                Err(e) => { log::error!("print job failed: {}", e); true }
+                                                Ok(_) => { log::info!("print job successful"); None }
+                                                Err(e) => {
+                                                    let err_str = e.to_string();
+                                                    log::error!("print job failed: {}", err_str);
+                                                    Some(err_str)
+                                                }
                                             },
-                                            Err(e) => { log::error!("failed to parse printer URI: {}", e); true }
+                                            Err(e) => {
+                                                let err_str = e.to_string();
+                                                log::error!("failed to parse printer URI: {}", err_str);
+                                                Some(err_str)
+                                            }
                                         };
 
-                                        if failed {
-                                            update_job_status(&redis_client, &attributes, "Failed").await;
+                                        if let Some(err_msg) = failed {
+                                            if err_msg.contains("PendingTimeout") {
+                                                update_job_status(&redis_client, &attributes, "Stuck").await;
+                                            } else {
+                                                update_job_status(&redis_client, &attributes, "Failed").await;
+                                            }
                                         } else {
                                             update_job_status(&redis_client, &attributes, "Completed").await;
                                         }
@@ -353,6 +373,42 @@ async fn close_window(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn get_available_printers() -> Result<Vec<crate::types::Printer>, String> {
+    crate::ipp::get_ipp_printers().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn requeue_to_printer(file_id: String, printer_uri: String, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    let redis_client = redis::Client::open(state.config.redis_url.as_str())
+        .map_err(|e| format!("Failed to create redis client: {}", e))?;
+
+    let mut con = redis_client.get_multiplexed_async_connection().await
+        .map_err(|e| format!("Failed to connect to redis: {}", e))?;
+
+    let data: Option<String> = con.hget("printf_jobs_status", &file_id).await
+        .map_err(|e| format!("Failed to fetch job info: {}", e))?;
+
+    if let Some(json_str) = data {
+        let mut job_info: JobInfo = serde_json::from_str(&json_str)
+            .map_err(|e| format!("Failed to parse job info: {}", e))?;
+
+        job_info.attributes.target_printer = Some(printer_uri);
+
+        let payload = serde_json::to_string(&vec![job_info.attributes.clone()])
+            .map_err(|e| format!("Failed to serialize attributes: {}", e))?;
+
+        con.lpush::<_, _, ()>("printf_queue", payload).await
+            .map_err(|e| format!("Failed to lpush printf_queue: {}", e))?;
+
+        update_job_status(&redis_client, &job_info.attributes, "Queued").await;
+        log::info!("re-queued stuck job {} to new printer", file_id);
+        Ok(())
+    } else {
+        Err(format!("Job {} not found in status hash", file_id))
+    }
+}
+
+#[tauri::command]
 async fn get_stats(month: Option<String>, state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
     let mut url = format!("{}/stats", BASE_URL);
     if let Some(m) = month {
@@ -371,7 +427,7 @@ async fn get_stats(month: Option<String>, state: tauri::State<'_, Arc<AppState>>
 
 #[tauri::command]
 async fn get_completed_orders(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
-    let url = format!("{}/webhook/completed", BASE_URL);
+    let url = format!("{}/client/completed", BASE_URL);
     let mut req = state.http_client.get(url);
     if let Some(ref key) = state.config.printf_key {
         req = req.header("x-printf-key", key.as_str());
@@ -387,7 +443,7 @@ async fn get_completed_orders(state: tauri::State<'_, Arc<AppState>>) -> Result<
 
 #[tauri::command]
 async fn mark_order_collected(order_id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
-    let url = format!("{}/webhook/collect", BASE_URL);
+    let url = format!("{}/client/collect", BASE_URL);
     let payload = serde_json::json!({ "orderId": order_id });
     let mut req = state.http_client.post(url).json(&payload);
     if let Some(ref key) = state.config.printf_key {
@@ -452,7 +508,9 @@ fn main() {
             close_window,
             get_stats,
             get_completed_orders,
-            mark_order_collected
+            mark_order_collected,
+            get_available_printers,
+            requeue_to_printer
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

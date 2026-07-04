@@ -15,7 +15,7 @@ impl ColorMode {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Printer {
     pub uri: String,
@@ -36,6 +36,8 @@ pub struct PrintAttributes {
     pub sides: String,
     pub document_format: String,
     pub print_scaling: String,
+    #[serde(default)]
+    pub target_printer: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
