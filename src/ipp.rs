@@ -26,7 +26,7 @@ impl PrinterManager {
         &mut self,
         has_color: bool,
         has_mono: bool,
-    ) -> (Option<Printer>, Option<Printer>, Option<String>) {
+    ) -> (Option<Printer>, Option<Printer>, Option<String>, Option<String>) {
         self.order_counter += 1;
 
         let color_printer = if has_color {
@@ -63,17 +63,14 @@ impl PrinterManager {
             None
         };
 
-        let media_source = if self.order_counter > 2 {
-            if self.order_counter % 2 == 1 {
-                Some("cas-1".to_string())
-            } else {
-                Some("cas-2".to_string())
-            }
+        let color_media = None;
+        let mono_media = if self.order_counter % 2 == 1 {
+            Some("tray-1".to_string())
         } else {
-            None
+            Some("tray-4".to_string())
         };
 
-        (color_printer, mono_printer, media_source)
+        (color_printer, mono_printer, color_media, mono_media)
     }
 
     pub fn get_printer(&mut self, color_mode: &ColorMode) -> Option<Printer> {

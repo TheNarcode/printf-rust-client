@@ -152,12 +152,13 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
                                 let has_color = attributes_list.iter().any(|a| a.color == crate::types::ColorMode::Color);
                                 let has_mono = attributes_list.iter().any(|a| a.color == crate::types::ColorMode::Monochrome);
 
-                                let (color_printer, mono_printer, media_source) = {
+                                let (color_printer, mono_printer, color_media_source, mono_media_source) = {
                                     let mut pm_guard = pm.lock().await;
                                     pm_guard.get_printers_for_order(has_color, has_mono)
                                 };
 
                                 for attributes in attributes_list {
+                                    let is_color = attributes.color == crate::types::ColorMode::Color;
                                     let printer = if let Some(target) = &attributes.target_printer {
                                         crate::types::Printer {
                                             uri: target.clone(),
@@ -188,7 +189,11 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
                                     let config = Arc::clone(&config);
                                     let http_client = Arc::clone(&http_client);
                                     let redis_client = redis_client.clone();
-                                    let media_source = media_source.clone();
+                                    let media_source = if is_color {
+                                        color_media_source.clone()
+                                    } else {
+                                        mono_media_source.clone()
+                                    };
 
                                     update_job_status(&redis_client, &attributes, "Processing").await;
 
