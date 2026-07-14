@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::fs::{self, File};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -5,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ipp::{PrinterManager, get_ipp_printers, print_job};
-use crate::types::{Config, PrintAttributes, JobInfo};
+use crate::types::{Config, JobInfo, PrintAttributes};
 use ftail::Ftail;
 use log::LevelFilter;
 use redis::AsyncCommands;
@@ -24,11 +26,17 @@ pub struct AppState {
 }
 
 fn current_timestamp() -> String {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     now.as_secs().to_string()
 }
 
-async fn update_job_status(redis_client: &redis::Client, attributes: &PrintAttributes, status: &str) {
+async fn update_job_status(
+    redis_client: &redis::Client,
+    attributes: &PrintAttributes,
+    status: &str,
+) {
     let job_info = JobInfo {
         file_id: attributes.file_id.clone(),
         attributes: attributes.clone(),
@@ -39,8 +47,15 @@ async fn update_job_status(redis_client: &redis::Client, attributes: &PrintAttri
     match serde_json::to_string(&job_info) {
         Ok(json) => match redis_client.get_multiplexed_async_connection().await {
             Ok(mut con) => {
-                match con.hset::<_, _, _, ()>("printf_jobs_status", &attributes.file_id, json).await {
-                    Ok(_) => log::info!("updated job status for {} to {}", attributes.file_id, status),
+                match con
+                    .hset::<_, _, _, ()>("printf_jobs_status", &attributes.file_id, json)
+                    .await
+                {
+                    Ok(_) => log::info!(
+                        "updated job status for {} to {}",
+                        attributes.file_id,
+                        status
+                    ),
                     Err(e) => log::error!("failed to update job status in redis: {}", e),
                 }
             }
@@ -284,10 +299,14 @@ async fn get_jobs(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<JobInfo>
     let redis_client = redis::Client::open(state.config.redis_url.as_str())
         .map_err(|e| format!("Failed to create redis client: {}", e))?;
 
-    let mut con = redis_client.get_multiplexed_async_connection().await
+    let mut con = redis_client
+        .get_multiplexed_async_connection()
+        .await
         .map_err(|e| format!("Failed to connect to redis: {}", e))?;
 
-    let queue_items: Vec<String> = con.lrange("printf_queue", 0, -1).await
+    let queue_items: Vec<String> = con
+        .lrange("printf_queue", 0, -1)
+        .await
         .map_err(|e| format!("Failed to fetch printf_queue: {}", e))?;
 
     let mut jobs: Vec<JobInfo> = Vec::new();
@@ -305,7 +324,9 @@ async fn get_jobs(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<JobInfo>
         }
     }
 
-    let status_items: redis::Value = con.hgetall("printf_jobs_status").await
+    let status_items: redis::Value = con
+        .hgetall("printf_jobs_status")
+        .await
         .map_err(|e| format!("Failed to fetch printf_jobs_status: {}", e))?;
 
     if let redis::Value::Bulk(items) = status_items {
@@ -330,14 +351,21 @@ async fn get_jobs(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<JobInfo>
 }
 
 #[tauri::command]
-async fn reprint_job(file_id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+async fn reprint_job(
+    file_id: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     let redis_client = redis::Client::open(state.config.redis_url.as_str())
         .map_err(|e| format!("Failed to create redis client: {}", e))?;
 
-    let mut con = redis_client.get_multiplexed_async_connection().await
+    let mut con = redis_client
+        .get_multiplexed_async_connection()
+        .await
         .map_err(|e| format!("Failed to connect to redis: {}", e))?;
 
-    let data: Option<String> = con.hget("printf_jobs_status", &file_id).await
+    let data: Option<String> = con
+        .hget("printf_jobs_status", &file_id)
+        .await
         .map_err(|e| format!("Failed to fetch job info: {}", e))?;
 
     if let Some(json_str) = data {
@@ -347,7 +375,8 @@ async fn reprint_job(file_id: String, state: tauri::State<'_, Arc<AppState>>) ->
         let payload = serde_json::to_string(&[&job_info.attributes])
             .map_err(|e| format!("Failed to serialize attributes: {}", e))?;
 
-        con.lpush::<_, _, ()>("printf_queue", payload).await
+        con.lpush::<_, _, ()>("printf_queue", payload)
+            .await
             .map_err(|e| format!("Failed to lpush printf_queue: {}", e))?;
 
         update_job_status(&redis_client, &job_info.attributes, "Queued").await;
@@ -379,18 +408,28 @@ async fn close_window(window: tauri::Window) -> Result<(), String> {
 
 #[tauri::command]
 async fn get_available_printers() -> Result<Vec<crate::types::Printer>, String> {
-    crate::ipp::get_ipp_printers().await.map_err(|e| e.to_string())
+    crate::ipp::get_ipp_printers()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn requeue_to_printer(file_id: String, printer_uri: String, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+async fn requeue_to_printer(
+    file_id: String,
+    printer_uri: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     let redis_client = redis::Client::open(state.config.redis_url.as_str())
         .map_err(|e| format!("Failed to create redis client: {}", e))?;
 
-    let mut con = redis_client.get_multiplexed_async_connection().await
+    let mut con = redis_client
+        .get_multiplexed_async_connection()
+        .await
         .map_err(|e| format!("Failed to connect to redis: {}", e))?;
 
-    let data: Option<String> = con.hget("printf_jobs_status", &file_id).await
+    let data: Option<String> = con
+        .hget("printf_jobs_status", &file_id)
+        .await
         .map_err(|e| format!("Failed to fetch job info: {}", e))?;
 
     if let Some(json_str) = data {
@@ -402,7 +441,8 @@ async fn requeue_to_printer(file_id: String, printer_uri: String, state: tauri::
         let payload = serde_json::to_string(&vec![job_info.attributes.clone()])
             .map_err(|e| format!("Failed to serialize attributes: {}", e))?;
 
-        con.lpush::<_, _, ()>("printf_queue", payload).await
+        con.lpush::<_, _, ()>("printf_queue", payload)
+            .await
             .map_err(|e| format!("Failed to lpush printf_queue: {}", e))?;
 
         update_job_status(&redis_client, &job_info.attributes, "Queued").await;
@@ -414,14 +454,17 @@ async fn requeue_to_printer(file_id: String, printer_uri: String, state: tauri::
 }
 
 #[tauri::command]
-async fn get_stats(month: Option<String>, state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
+async fn get_stats(
+    month: Option<String>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
     let mut url = format!("{}/client/stats", BASE_URL);
     if let Some(m) = month {
         if !m.is_empty() {
             url = format!("{}/client/stats?month={}", BASE_URL, m);
         }
     }
-    
+
     let mut req = state.http_client.get(url);
     if let Some(ref key) = state.config.printf_key {
         req = req.header("x-printf-key", key.as_str());
@@ -429,9 +472,9 @@ async fn get_stats(month: Option<String>, state: tauri::State<'_, Arc<AppState>>
     match req.send().await {
         Ok(resp) => match resp.text().await {
             Ok(text) => {
-                println!("{}",text);
+                println!("{}", text);
                 Ok(text)
-            },
+            }
             Err(e) => Err(format!("Failed to read stats text: {}", e)),
         },
         Err(e) => Err(format!("Failed to fetch stats: {}", e)),
@@ -455,7 +498,10 @@ async fn get_completed_orders(state: tauri::State<'_, Arc<AppState>>) -> Result<
 }
 
 #[tauri::command]
-async fn mark_order_collected(order_id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
+async fn mark_order_collected(
+    order_id: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
     let url = format!("{}/client/collect", BASE_URL);
     let payload = serde_json::json!({ "orderId": order_id });
     let mut req = state.http_client.post(url).json(&payload);
