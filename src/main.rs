@@ -415,15 +415,23 @@ async fn requeue_to_printer(file_id: String, printer_uri: String, state: tauri::
 
 #[tauri::command]
 async fn get_stats(month: Option<String>, state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
-    let mut url = format!("{}/stats", BASE_URL);
+    let mut url = format!("{}/client/stats", BASE_URL);
     if let Some(m) = month {
         if !m.is_empty() {
-            url = format!("{}/stats?month={}", BASE_URL, m);
+            url = format!("{}/client/stats?month={}", BASE_URL, m);
         }
     }
-    match state.http_client.get(&url).send().await {
+    
+    let mut req = state.http_client.get(url);
+    if let Some(ref key) = state.config.printf_key {
+        req = req.header("x-printf-key", key.as_str());
+    }
+    match req.send().await {
         Ok(resp) => match resp.text().await {
-            Ok(text) => Ok(text),
+            Ok(text) => {
+                println!("{}",text);
+                Ok(text)
+            },
             Err(e) => Err(format!("Failed to read stats text: {}", e)),
         },
         Err(e) => Err(format!("Failed to fetch stats: {}", e)),

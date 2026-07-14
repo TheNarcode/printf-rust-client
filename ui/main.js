@@ -33,6 +33,7 @@ async function fetchPrinters() {
 }
 
 async function init() {
+    populateMonthSelect();
     await fetchPrinters();
     await checkClientStatus();
     await fetchJobs();
@@ -67,6 +68,35 @@ async function init() {
     });
 
     await fetchCompletedOrders();
+}
+
+function populateMonthSelect() {
+    const monthSelect = document.getElementById('stats-month-select');
+    if (!monthSelect) return;
+    
+    monthSelect.innerHTML = '';
+    
+    const now = new Date();
+    const currentOption = document.createElement('option');
+    currentOption.value = 'current';
+    const currentMonthName = now.toLocaleString('en-US', { month: 'long' });
+    currentOption.textContent = `${currentMonthName} ${now.getFullYear()} (Current)`;
+    monthSelect.appendChild(currentOption);
+    
+    for (let i = 1; i <= 3; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const opt = document.createElement('option');
+        const monthNum = String(d.getMonth() + 1).padStart(2, '0');
+        opt.value = `${d.getFullYear()}-${monthNum}`;
+        const monthName = d.toLocaleString('en-US', { month: 'long' });
+        opt.textContent = `${monthName} ${d.getFullYear()}`;
+        monthSelect.appendChild(opt);
+    }
+    
+    const allOption = document.createElement('option');
+    allOption.value = 'all';
+    allOption.textContent = 'All Time';
+    monthSelect.appendChild(allOption);
 }
 
 function switchTab(tab) {

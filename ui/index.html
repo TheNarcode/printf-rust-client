@@ -18,10 +18,12 @@
         <header class="app-header" data-tauri-drag-region>
             <div class="header-brand" data-tauri-drag-region>
                 <div class="brand-logo" data-tauri-drag-region>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <rect width="24" height="24" rx="6" fill="#0f172a" />
-                        <path d="M7 12H17M12 7V17" stroke="#ffffff" stroke-width="2" stroke-linecap="round"
-                            stroke-linejoin="round" />
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                        class="bi bi-printer-fill" viewBox="0 0 16 16">
+                        <path
+                            d="M5 1a2 2 0 0 0-2 2v1h10V3a2 2 0 0 0-2-2zm6 8H5a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1" />
+                        <path
+                            d="M0 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-1v-2a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v2H2a2 2 0 0 1-2-2zm2.5 1a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1" />
                     </svg>
                 </div>
                 <h1 data-tauri-drag-region>printf</h1>
@@ -66,17 +68,6 @@
                     <div class="jobs-list-container">
                         <div id="jobs-list" class="jobs-list">
                             <div class="empty-state" id="empty-state">
-                                <div class="empty-icon">
-                                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none"
-                                        xmlns="http://www.w3.org/2000/svg">
-                                        <path
-                                            d="M19 8H5C3.89543 8 3 8.89543 3 10V16H7V20H17V16H21V10C21 8.89543 20.1046 8 19 8Z"
-                                            stroke="#94a3b8" stroke-width="2" stroke-linecap="round"
-                                            stroke-linejoin="round" />
-                                        <path d="M17 4H7V8H17V4Z" stroke="#94a3b8" stroke-width="2"
-                                            stroke-linecap="round" stroke-linejoin="round" />
-                                    </svg>
-                                </div>
                                 <p>No active print jobs</p>
                                 <span>Start the client to monitor incoming jobs.</span>
                             </div>
@@ -95,11 +86,6 @@
                                 Refresh Stats
                             </button>
                             <select id="stats-month-select" class="custom-select">
-                                <option value="current">June 2026 (Current)</option>
-                                <option value="2026-05">May 2026</option>
-                                <option value="2026-04">April 2026</option>
-                                <option value="2026-03">March 2026</option>
-                                <option value="all">All Time</option>
                             </select>
                         </div>
                     </div>
@@ -164,14 +150,10 @@
                     <div class="vendor-payable-container">
                         <div class="vendor-payable-info">
                             <div class="vendor-payable-icon">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
-                                    xmlns="http://www.w3.org/2000/svg">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                                    class="bi bi-currency-dollar" viewBox="0 0 16 16">
                                     <path
-                                        d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 20C7.59 20 4 16.41 4 12C4 7.59 7.59 4 12 4C16.41 4 20 7.59 20 12C20 16.41 16.41 20 12 20Z"
-                                        fill="currentColor" />
-                                    <path
-                                        d="M12 6C11.45 6 11 6.45 11 7V7.22C9.28 7.56 8 9.1 8 10.95C8 12.87 9.53 14.37 11 14.77V17.06C9.9 16.8 9.06 16.03 8.71 15.01C8.53 14.51 7.97 14.26 7.47 14.45C6.96 14.63 6.72 15.18 6.9 15.68C7.5 17.43 8.97 18.59 11 18.88V19C11 19.55 11.45 20 12 20C12.55 20 13 19.55 13 19V18.78C14.72 18.44 16 16.9 16 15.05C16 13.13 14.47 11.63 13 11.23V8.94C14.1 9.2 14.94 9.97 15.29 10.99C15.47 11.49 16.03 11.74 16.53 11.55C17.04 11.37 17.28 10.82 17.1 10.32C16.5 8.57 15.03 7.41 13 7.12V7C13 6.45 12.55 6 12 6ZM13 16.71V13.29C14.1 13.62 15 14.45 15 15C15 15.55 14.1 16.38 13 16.71ZM11 10.71C9.9 10.38 9 9.55 9 9C9 8.45 9.9 7.62 11 7.29V10.71Z"
-                                        fill="currentColor" />
+                                        d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.3 0-1.59-.947-2.51-2.956-3.028l-.722-.187V3.467c1.122.11 1.879.714 2.07 1.616h1.47c-.166-1.6-1.54-2.748-3.54-2.875V1H7.591v1.233c-1.939.23-3.27 1.472-3.27 3.156 0 1.454.966 2.483 2.661 2.917l.61.162v4.031c-1.149-.17-1.94-.8-2.131-1.718zm3.391-3.836c-1.043-.263-1.6-.825-1.6-1.616 0-.944.704-1.641 1.8-1.828v3.495l-.2-.05zm1.591 1.872c1.287.323 1.852.859 1.852 1.769 0 1.097-.826 1.828-2.2 1.939V8.73z" />
                                 </svg>
                             </div>
                             <div class="vendor-payable-text">

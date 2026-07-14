@@ -16,11 +16,9 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Printf Client",
-        "width": 1080,
-        "height": 720,
+        "title": "printf",
+        "maximized": true,
         "resizable": true,
-        "fullscreen": false,
         "transparent": true,
         "decorations": false
       }
