@@ -22,6 +22,16 @@ impl PrinterManager {
         }
     }
 
+    pub fn get_printers(&self) -> Vec<Printer> {
+        self.printers.clone()
+    }
+
+    pub fn set_printer_paused(&mut self, uri: &str, paused: bool) {
+        if let Some(p) = self.printers.iter_mut().find(|p| p.uri == uri) {
+            p.paused = paused;
+        }
+    }
+
     pub fn get_printers_for_order(
         &mut self,
         has_color: bool,
@@ -33,7 +43,7 @@ impl PrinterManager {
             let color_printers: Vec<_> = self
                 .printers
                 .iter()
-                .filter(|p| p.color_mode == ColorMode::Color)
+                .filter(|p| p.color_mode == ColorMode::Color && !p.paused)
                 .collect();
             if !color_printers.is_empty() {
                 let p = color_printers[self.color_counter % color_printers.len()].clone();
@@ -50,7 +60,7 @@ impl PrinterManager {
             let mono_printers: Vec<_> = self
                 .printers
                 .iter()
-                .filter(|p| p.color_mode == ColorMode::Monochrome)
+                .filter(|p| p.color_mode == ColorMode::Monochrome && !p.paused)
                 .collect();
             if !mono_printers.is_empty() {
                 let p = mono_printers[self.monochrome_counter % mono_printers.len()].clone();
@@ -77,7 +87,7 @@ impl PrinterManager {
         let color_mode_printers: Vec<_> = self
             .printers
             .iter()
-            .filter(|p| p.color_mode == *color_mode)
+            .filter(|p| p.color_mode == *color_mode && !p.paused)
             .collect();
 
         if color_mode_printers.is_empty() {
@@ -130,7 +140,10 @@ pub async fn print_job(
         log::info!("Job ID: {}, starting status polling...", job_id);
 
         let ipp_client = AsyncIppClient::new(printer_uri.clone());
-        let mut pending_seconds = 0;
+        let mut pending_seconds = 0i32;
+        let mut processing_seconds = 0i32;       // state 6: processing-stopped
+        let mut processing_active_seconds = 0i32; // state 5: actively processing
+
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
@@ -158,17 +171,45 @@ pub async fn print_job(
                             }
                             return Ok(());
                         } else if state == 7 || state == 8 {
-                            return Err(format!("Job {} was canceled or aborted (state: {})", job_id, state).into());
-                        } else if state == 3 {
+                            // Canceled or aborted — treat as stuck so user can requeue
+                            log::warn!("Job {} was canceled or aborted (state: {}), returning PendingTimeout", job_id, state);
+                            return Err("PendingTimeout: Job was canceled or aborted by the printer".into());
+                        } else if state == 3 || state == 4 {
+                            // Pending / pending-held
                             pending_seconds += 1;
+                            processing_seconds = 0;
                             if pending_seconds >= 30 {
                                 log::warn!("Job {} stuck in pending for 30s, returning PendingTimeout", job_id);
                                 let cancel_op = IppOperationBuilder::cancel_job(printer_uri.clone(), job_id).build();
                                 let _ = ipp_client.send(cancel_op).await;
                                 return Err("PendingTimeout: Job stuck in pending state for 30 seconds".into());
                             }
+                        } else if state == 6 {
+                            // Processing-stopped
+                            processing_seconds += 1;
+                            pending_seconds = 0;
+                            processing_active_seconds = 0;
+                            if processing_seconds >= 30 {
+                                log::warn!("Job {} stuck in processing-stopped for 30s, returning PendingTimeout", job_id);
+                                let cancel_op = IppOperationBuilder::cancel_job(printer_uri.clone(), job_id).build();
+                                let _ = ipp_client.send(cancel_op).await;
+                                return Err("PendingTimeout: Job stuck in processing-stopped state for 30 seconds".into());
+                            }
+                        } else if state == 5 {
+                            // Actively processing — allow up to 120s before giving up
+                            processing_active_seconds += 1;
+                            pending_seconds = 0;
+                            processing_seconds = 0;
+                            if processing_active_seconds >= 120 {
+                                log::warn!("Job {} processing for 120s without completing, returning PendingTimeout", job_id);
+                                let cancel_op = IppOperationBuilder::cancel_job(printer_uri.clone(), job_id).build();
+                                let _ = ipp_client.send(cancel_op).await;
+                                return Err("PendingTimeout: Job processing for 120 seconds without completing".into());
+                            }
                         } else {
                             pending_seconds = 0;
+                            processing_seconds = 0;
+                            processing_active_seconds = 0;
                         }
                     } else {
                         log::warn!("Could not retrieve job state for job {}", job_id);
@@ -227,6 +268,8 @@ async fn download_file(
 }
 
 fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String>) -> Vec<IppAttribute> {
+    let mut copies_count = 1;
+
     let mut attrs: Vec<IppAttribute> = [
         ("orientation-requested", attributes.orientation),
         ("print-color-mode", attributes.color.to_val().to_string()),
@@ -240,14 +283,47 @@ fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String
     ]
     .into_iter()
     .filter(|(_, value)| !value.is_empty())
-    .filter_map(|(name, value)| match value.parse() {
-        Ok(v) => Some(IppAttribute::new(name, v)),
-        Err(e) => {
-            log::warn!("Skipping IPP attribute '{}' with value '{}': {}", name, value, e);
-            None
-        }
+    .filter_map(|(name, value)| match name {
+        "copies" => match value.parse::<i32>() {
+            Ok(val) => {
+                copies_count = val;
+                Some(IppAttribute::new(name, IppValue::Integer(val)))
+            }
+            Err(e) => {
+                log::warn!("Skipping integer IPP attribute '{}' with value '{}': {}", name, value, e);
+                None
+            }
+        },
+        "number-up" => match value.parse::<i32>() {
+            Ok(val) => Some(IppAttribute::new(name, IppValue::Integer(val))),
+            Err(e) => {
+                log::warn!("Skipping integer IPP attribute '{}' with value '{}': {}", name, value, e);
+                None
+            }
+        },
+        "orientation-requested" => match value.parse::<i32>() {
+            Ok(val) => Some(IppAttribute::new(name, IppValue::Enum(val))),
+            Err(e) => {
+                log::warn!("Skipping enum IPP attribute '{}' with value '{}': {}", name, value, e);
+                None
+            }
+        },
+        _ => match value.parse() {
+            Ok(v) => Some(IppAttribute::new(name, v)),
+            Err(e) => {
+                log::warn!("Skipping IPP attribute '{}' with value '{}': {}", name, value, e);
+                None
+            }
+        },
     })
     .collect();
+
+    if copies_count > 1 {
+        attrs.push(IppAttribute::new(
+            "multiple-document-handling",
+            IppValue::Keyword("separate-documents-uncollated-copies".to_string()),
+        ));
+    }
 
     if let Some(source) = media_source {
         use std::collections::BTreeMap;
@@ -290,10 +366,8 @@ pub async fn get_ipp_printers() -> Result<Vec<Printer>, Box<dyn std::error::Erro
             .map(|attr| attr.value().to_string())
             .unwrap_or_else(|| uri.clone());
 
-        printers.push(Printer { uri, name, color_mode });
+        printers.push(Printer { uri, name, color_mode, paused: false });
     }
-
-    println!("{:#?}", printers);
 
     Ok(printers)
 }

@@ -714,3 +714,166 @@ body {
 .completed-order-row:hover {
     background-color: var(--bg-body);
 }
+
+/* Job row: new API-based layout */
+.job-row-new {
+    padding: 1rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    border-bottom: 1px solid var(--border);
+    transition: background-color 0.15s ease;
+}
+
+.job-row-new:last-child { border-bottom: none; }
+.job-row-new:hover { background-color: var(--secondary); }
+
+.job-row-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.job-row-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-main);
+    font-variant-numeric: tabular-nums;
+}
+
+.job-row-title span.dim {
+    font-weight: 400;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+/* Status dot */
+.job-status-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: inline-block;
+}
+
+.dot-queued    { background-color: hsl(45, 95%, 50%); }
+.dot-processing{ background-color: hsl(45, 95%, 50%); animation: pulse-soft 1.5s infinite; }
+.dot-completed { background-color: hsl(142, 71%, 42%); }
+.dot-failed    { background-color: hsl(0, 78%, 56%); }
+.dot-stuck     { background-color: hsl(24, 90%, 55%); animation: pulse-soft 1.5s infinite; }
+
+/* Pills row */
+.job-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+}
+
+.pill {
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--secondary);
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    padding: 0.15rem 0.625rem;
+    white-space: nowrap;
+}
+
+/* Printer card in settings */
+.printer-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.1rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    transition: background-color 0.15s ease;
+}
+
+.printer-card:last-child { border-bottom: none; }
+.printer-card:hover { background-color: var(--secondary); }
+
+.printer-card-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.printer-card-name {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.printer-card-uri {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.printer-card-meta {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 0.15rem;
+}
+
+.printer-toggle-btn {
+    font-family: var(--font-body);
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.35rem 0.9rem;
+    border-radius: 0.375rem;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+}
+
+.printer-toggle-btn.active {
+    background: var(--secondary);
+    color: var(--text-main);
+}
+
+.printer-toggle-btn.paused {
+    background: hsl(24, 90%, 55%);
+    color: #fff;
+    border-color: transparent;
+}
+
+.printer-toggle-btn.active:hover { background: var(--secondary-hover); }
+.printer-toggle-btn.paused:hover { opacity: 0.85; }
+
+/* Live Timer UI */
+.job-timer {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.25rem;
+}
+
+.job-timer-bar-wrap {
+    flex: 1;
+    height: 6px;
+    background-color: var(--border);
+    border-radius: 9999px;
+    overflow: hidden;
+}
+
+.job-timer-bar {
+    height: 100%;
+    width: 0%;
+    background-color: hsl(142, 71%, 42%);
+    transition: width 0.3s linear, background-color 0.3s ease;
+}
+
+.job-timer-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    min-width: 3.5rem;
+    text-align: right;
+}

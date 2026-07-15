@@ -21,6 +21,8 @@ pub struct Printer {
     pub uri: String,
     pub name: String,
     pub color_mode: ColorMode,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -38,6 +40,8 @@ pub struct PrintAttributes {
     pub print_scaling: String,
     #[serde(default)]
     pub target_printer: Option<String>,
+    #[serde(alias = "orderId", default)]
+    pub order: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,13 +53,47 @@ pub struct Config {
     pub webhook_url: Option<String>,
     #[serde(default)]
     pub printf_key: Option<String>,
+    pub base_url: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct JobInfo {
     pub file_id: String,
+    pub order_id: Option<String>,
     pub attributes: PrintAttributes,
     pub status: String,
     pub updated_at: String,
+}
+
+// Types for the /client/orders API response
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiFile {
+    pub file_id: String,
+    pub order: String,
+    pub orientation: String,
+    pub color: String,
+    pub copies: String,
+    pub paper_format: String,
+    pub page_ranges: String,
+    pub number_up: String,
+    pub sides: String,
+    pub print_scaling: String,
+    pub document_format: String,
+    pub printed: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiOrder {
+    pub email: String,
+    pub id: String,
+    pub amount: f64,
+    pub payment_request_id: String,
+    pub paid: bool,
+    pub status: i32,
+    pub printer_name: Option<String>,
+    pub created_at: String,
+    pub files: Vec<ApiFile>,
 }

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ipp::{PrinterManager, get_ipp_printers, print_job};
-use crate::types::{Config, JobInfo, PrintAttributes};
+use crate::types::{ApiOrder, Config, JobInfo, PrintAttributes};
 use ftail::Ftail;
 use log::LevelFilter;
 use redis::AsyncCommands;
@@ -23,6 +23,7 @@ pub struct AppState {
     pub http_client: Arc<reqwest::Client>,
     pub is_running: Arc<AtomicBool>,
     pub cancel_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub printer_manager: Arc<Mutex<Option<PrinterManager>>>,
 }
 
 fn current_timestamp() -> String {
@@ -35,10 +36,12 @@ fn current_timestamp() -> String {
 async fn update_job_status(
     redis_client: &redis::Client,
     attributes: &PrintAttributes,
+    order_id: Option<String>,
     status: &str,
 ) {
     let job_info = JobInfo {
         file_id: attributes.file_id.clone(),
+        order_id,
         attributes: attributes.clone(),
         status: status.to_string(),
         updated_at: current_timestamp(),
@@ -81,18 +84,38 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
 
     log::info!("starting printf background client loop");
 
+    let pm = Arc::clone(&state.printer_manager);
+
     tauri::async_runtime::spawn(async move {
-        let printers = match get_ipp_printers().await {
-            Ok(p) => p,
+        // Initialize or refresh the printer manager
+        match get_ipp_printers().await {
+            Ok(printers) => {
+                let mut pm_lock = pm.lock().await;
+                if pm_lock.is_none() {
+                    *pm_lock = Some(PrinterManager::new(printers));
+                } else {
+                    // Refresh printer list but preserve paused state
+                    let existing = pm_lock.take().unwrap();
+                    let paused_uris: Vec<String> = existing
+                        .get_printers()
+                        .iter()
+                        .filter(|p| p.paused)
+                        .map(|p| p.uri.clone())
+                        .collect();
+                    let mut new_pm = PrinterManager::new(printers);
+                    for uri in &paused_uris {
+                        new_pm.set_printer_paused(uri, true);
+                    }
+                    *pm_lock = Some(new_pm);
+                }
+                log::info!("printer manager initialized in background task");
+            }
             Err(e) => {
                 log::error!("failed to get ipp printers: {}", e);
                 is_running_flag.store(false, Ordering::SeqCst);
                 return;
             }
-        };
-
-        let pm = Arc::new(Mutex::new(PrinterManager::new(printers)));
-        log::info!("printer manager initialized in background task");
+        }
 
         let redis_client = match redis::Client::open(config.redis_url.as_str()) {
             Ok(c) => c,
@@ -169,16 +192,21 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
 
                                 let (color_printer, mono_printer, color_media_source, mono_media_source) = {
                                     let mut pm_guard = pm.lock().await;
-                                    pm_guard.get_printers_for_order(has_color, has_mono)
+                                    let pm_ref = pm_guard.as_mut().unwrap();
+                                    pm_ref.get_printers_for_order(has_color, has_mono)
                                 };
 
-                                for attributes in attributes_list {
+                                // Extract order_id from the first attribute (since they share the same order)
+                                let order_id: Option<String> = attributes_list.first().and_then(|a| a.order.clone());
+
+                                for mut attributes in attributes_list {
                                     let is_color = attributes.color == crate::types::ColorMode::Color;
                                     let printer = if let Some(target) = &attributes.target_printer {
                                         crate::types::Printer {
                                             uri: target.clone(),
                                             name: target.clone(),
                                             color_mode: attributes.color.clone(),
+                                            paused: false,
                                         }
                                     } else {
                                         match attributes.color {
@@ -186,7 +214,7 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
                                                 Some(p) => p.clone(),
                                                 None => {
                                                     log::error!("no color printer found for order");
-                                                    update_job_status(&redis_client, &attributes, "Failed").await;
+                                                    update_job_status(&redis_client, &attributes, order_id.clone(), "Failed").await;
                                                     continue;
                                                 }
                                             },
@@ -194,7 +222,7 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
                                                 Some(p) => p.clone(),
                                                 None => {
                                                     log::error!("no monochrome printer found for order");
-                                                    update_job_status(&redis_client, &attributes, "Failed").await;
+                                                    update_job_status(&redis_client, &attributes, order_id.clone(), "Failed").await;
                                                     continue;
                                                 }
                                             },
@@ -209,8 +237,11 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
                                     } else {
                                         mono_media_source.clone()
                                     };
+                                    let order_id_cloned = order_id.clone();
 
-                                    update_job_status(&redis_client, &attributes, "Processing").await;
+                                    attributes.target_printer = Some(printer.name.clone());
+
+                                    update_job_status(&redis_client, &attributes, order_id_cloned.clone(), "Processing").await;
 
                                     tokio::spawn(async move {
                                         log::info!("using printer {} ({}) for print", printer.name, printer.uri);
@@ -233,12 +264,12 @@ async fn start_client(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
 
                                         if let Some(err_msg) = failed {
                                             if err_msg.contains("PendingTimeout") {
-                                                update_job_status(&redis_client, &attributes, "Stuck").await;
+                                                update_job_status(&redis_client, &attributes, order_id_cloned.clone(), "Stuck").await;
                                             } else {
-                                                update_job_status(&redis_client, &attributes, "Failed").await;
+                                                update_job_status(&redis_client, &attributes, order_id_cloned.clone(), "Failed").await;
                                             }
                                         } else {
-                                            update_job_status(&redis_client, &attributes, "Completed").await;
+                                            update_job_status(&redis_client, &attributes, order_id_cloned.clone(), "Completed").await;
                                         }
                                     });
                                 }
@@ -316,6 +347,7 @@ async fn get_jobs(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<JobInfo>
             for attrs in attrs_list {
                 jobs.push(JobInfo {
                     file_id: attrs.file_id.clone(),
+                    order_id: attrs.order.clone(),
                     attributes: attrs,
                     status: "Queued".to_string(),
                     updated_at: current_timestamp(),
@@ -351,6 +383,54 @@ async fn get_jobs(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<JobInfo>
 }
 
 #[tauri::command]
+async fn get_orders(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<ApiOrder>, String> {
+    let url = format!("{}/client/orders", BASE_URL);
+    let mut req = state.http_client.get(&url);
+    if let Some(ref key) = state.config.printf_key {
+        req = req.header("x-printf-key", key.as_str());
+    }
+    let resp = req.send().await.map_err(|e| format!("Failed to fetch orders: {}", e))?;
+    let orders = resp.json::<Vec<ApiOrder>>().await.map_err(|e| format!("Failed to parse orders: {}", e))?;
+    Ok(orders)
+}
+
+#[tauri::command]
+async fn get_printer_list(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<crate::types::Printer>, String> {
+    let pm_lock = state.printer_manager.lock().await;
+    if let Some(ref pm) = *pm_lock {
+        Ok(pm.get_printers())
+    } else {
+        // Manager not initialized yet, query fresh
+        drop(pm_lock);
+        crate::ipp::get_ipp_printers().await.map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+async fn pause_printer(uri: String, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    let mut pm_lock = state.printer_manager.lock().await;
+    if let Some(ref mut pm) = *pm_lock {
+        pm.set_printer_paused(&uri, true);
+        log::info!("Paused printer: {}", uri);
+        Ok(())
+    } else {
+        Err("Printer manager not initialized".to_string())
+    }
+}
+
+#[tauri::command]
+async fn unpause_printer(uri: String, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    let mut pm_lock = state.printer_manager.lock().await;
+    if let Some(ref mut pm) = *pm_lock {
+        pm.set_printer_paused(&uri, false);
+        log::info!("Unpaused printer: {}", uri);
+        Ok(())
+    } else {
+        Err("Printer manager not initialized".to_string())
+    }
+}
+
+#[tauri::command]
 async fn reprint_job(
     file_id: String,
     state: tauri::State<'_, Arc<AppState>>,
@@ -379,7 +459,7 @@ async fn reprint_job(
             .await
             .map_err(|e| format!("Failed to lpush printf_queue: {}", e))?;
 
-        update_job_status(&redis_client, &job_info.attributes, "Queued").await;
+        update_job_status(&redis_client, &job_info.attributes, job_info.order_id.clone(), "Queued").await;
         log::info!("re-queued job {} for reprint", file_id);
         Ok(())
     } else {
@@ -445,7 +525,7 @@ async fn requeue_to_printer(
             .await
             .map_err(|e| format!("Failed to lpush printf_queue: {}", e))?;
 
-        update_job_status(&redis_client, &job_info.attributes, "Queued").await;
+        update_job_status(&redis_client, &job_info.attributes, job_info.order_id.clone(), "Queued").await;
         log::info!("re-queued stuck job {} to new printer", file_id);
         Ok(())
     } else {
@@ -541,6 +621,7 @@ fn main() {
                 s3_base_url: "http://localhost:8000/".to_string(),
                 webhook_url: None,
                 printf_key: None,
+                base_url: BASE_URL.to_string(),
             })
         }
     };
@@ -552,6 +633,7 @@ fn main() {
         http_client,
         is_running: Arc::new(AtomicBool::new(false)),
         cancel_tx: Mutex::new(None),
+        printer_manager: Arc::new(Mutex::new(None)),
     });
 
     tauri::Builder::default()
@@ -561,6 +643,7 @@ fn main() {
             stop_client,
             get_client_status,
             get_jobs,
+            get_orders,
             reprint_job,
             minimize_window,
             maximize_window,
@@ -569,6 +652,9 @@ fn main() {
             get_completed_orders,
             mark_order_collected,
             get_available_printers,
+            get_printer_list,
+            pause_printer,
+            unpause_printer,
             requeue_to_printer
         ])
         .run(tauri::generate_context!())
