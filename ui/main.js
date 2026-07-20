@@ -83,27 +83,19 @@ function populateMonthSelect() {
 
     monthSelect.innerHTML = '';
 
-    const now = new Date();
-    const currentOption = document.createElement('option');
-    currentOption.value = 'current';
-    const currentMonthName = now.toLocaleString('en-US', { month: 'long' });
-    currentOption.textContent = `${currentMonthName} ${now.getFullYear()} (Current)`;
-    monthSelect.appendChild(currentOption);
+    const options = [
+        { value: 'current', label: 'Current Month' },
+        { value: 'past', label: 'Past Month' },
+        { value: 'three', label: 'Last 3 Months' },
+        { value: 'all', label: 'All Time' }
+    ];
 
-    for (let i = 1; i <= 3; i++) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    options.forEach(optData => {
         const opt = document.createElement('option');
-        const monthNum = String(d.getMonth() + 1).padStart(2, '0');
-        opt.value = `${d.getFullYear()}-${monthNum}`;
-        const monthName = d.toLocaleString('en-US', { month: 'long' });
-        opt.textContent = `${monthName} ${d.getFullYear()}`;
+        opt.value = optData.value;
+        opt.textContent = optData.label;
         monthSelect.appendChild(opt);
-    }
-
-    const allOption = document.createElement('option');
-    allOption.value = 'all';
-    allOption.textContent = 'All Time';
-    monthSelect.appendChild(allOption);
+    });
 }
 
 function switchTab(tab) {
@@ -194,10 +186,7 @@ async function fetchJobs() {
 async function fetchStatistics() {
     try {
         let monthParam = selectedMonth;
-        if (monthParam === 'current') {
-            const now = new Date();
-            monthParam = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-        } else if (monthParam === 'all') {
+        if (monthParam === 'all') {
             monthParam = null;
         }
 
