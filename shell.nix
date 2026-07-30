@@ -18,6 +18,7 @@ pkgs.mkShell {
     glib
     gtk3
     libsoup_3
+    xdotool
   ];
 
   OPENSSL_DIR = "${pkgs.openssl.dev}";

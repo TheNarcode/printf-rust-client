@@ -32,6 +32,18 @@ impl PrinterManager {
         }
     }
 
+    pub fn set_printer_properties(
+        &mut self,
+        name: &str,
+        properties: crate::types::PrinterProperties,
+        color_mode: ColorMode,
+    ) {
+        if let Some(p) = self.printers.iter_mut().find(|p| p.name == name || p.uri.contains(name)) {
+            p.properties = Some(properties);
+            p.color_mode = color_mode;
+        }
+    }
+
     pub fn get_printers_for_order(
         &mut self,
         has_color: bool,
@@ -151,16 +163,45 @@ pub async fn print_job(
             match ipp_client.send(get_attrs).await {
                 Ok(resp) => {
                     let mut job_state = None;
+                    let mut reasons: Vec<String> = Vec::new();
+                    let mut message: Option<String> = None;
+
                     if let Some(group) = resp.attributes().groups_of(DelimiterTag::JobAttributes).next() {
                         if let Some(attr) = group.attributes().get("job-state") {
                             if let Some(&state) = attr.value().as_enum() {
                                 job_state = Some(state);
                             }
                         }
+                        if let Some(attr) = group.attributes().get("job-state-reasons") {
+                            match attr.value() {
+                                IppValue::Keyword(k) => reasons.push(k.clone()),
+                                IppValue::Array(arr) => {
+                                    for item in arr {
+                                        if let IppValue::Keyword(k) = item {
+                                            reasons.push(k.clone());
+                                        } else {
+                                            reasons.push(item.to_string());
+                                        }
+                                    }
+                                }
+                                v => reasons.push(v.to_string()),
+                            }
+                        }
+                        if let Some(attr) = group.attributes().get("job-state-message") {
+                            message = Some(attr.value().to_string());
+                        }
                     }
 
                     if let Some(state) = job_state {
-                        log::info!("Job {} state: {}", job_id, state);
+                        let reasons_str = reasons.join(", ");
+                        log::info!(
+                            "Job {} state: {} | reasons: [{}] | msg: {:?}",
+                            job_id,
+                            state,
+                            reasons_str,
+                            message
+                        );
+
                         // IPP Job States:
                         // 3 = pending, 4 = pending-held, 5 = processing, 6 = processing-stopped
                         // 7 = canceled, 8 = aborted, 9 = completed
@@ -171,10 +212,38 @@ pub async fn print_job(
                             }
                             return Ok(());
                         } else if state == 7 || state == 8 {
-                            // Canceled or aborted — treat as stuck so user can requeue
-                            log::warn!("Job {} was canceled or aborted (state: {}), returning PendingTimeout", job_id, state);
-                            return Err("PendingTimeout: Job was canceled or aborted by the printer".into());
-                        } else if state == 3 || state == 4 {
+                            // Canceled or aborted — treat as immediate failure/stuck
+                            let err_detail = message.or_else(|| if !reasons.is_empty() { Some(reasons_str) } else { None })
+                                .unwrap_or_else(|| format!("state {}", state));
+                            log::warn!("Job {} was canceled or aborted: {}", job_id, err_detail);
+                            return Err(format!("PendingTimeout: Job was canceled or aborted ({})", err_detail).into());
+                        }
+
+                        // Check for explicit failure/error reasons on job-state-reasons
+                        let has_explicit_error = reasons.iter().any(|r| {
+                            let lr = r.to_lowercase();
+                            lr.contains("error")
+                                || lr.contains("aborted")
+                                || lr.contains("canceled")
+                                || lr.contains("failed")
+                                || lr.contains("stopped")
+                                || lr.contains("media-jam")
+                                || lr.contains("offline")
+                                || lr.contains("tray-missing")
+                                || lr.contains("toner-empty")
+                                || lr.contains("door-open")
+                        });
+
+                        if has_explicit_error || (state == 6 && (!reasons.is_empty() || message.is_some())) {
+                            let err_detail = message.or_else(|| if !reasons.is_empty() { Some(reasons_str) } else { None })
+                                .unwrap_or_else(|| format!("processing-stopped (state {})", state));
+                            log::warn!("Job {} failed with explicit error: {}", job_id, err_detail);
+                            let cancel_op = IppOperationBuilder::cancel_job(printer_uri.clone(), job_id).build();
+                            let _ = ipp_client.send(cancel_op).await;
+                            return Err(format!("PendingTimeout: Job error ({})", err_detail).into());
+                        }
+
+                        if state == 3 || state == 4 {
                             // Pending / pending-held
                             pending_seconds += 1;
                             processing_seconds = 0;
@@ -185,15 +254,15 @@ pub async fn print_job(
                                 return Err("PendingTimeout: Job stuck in pending state for 30 seconds".into());
                             }
                         } else if state == 6 {
-                            // Processing-stopped
+                            // Processing-stopped (without explicit error reason)
                             processing_seconds += 1;
                             pending_seconds = 0;
                             processing_active_seconds = 0;
-                            if processing_seconds >= 30 {
-                                log::warn!("Job {} stuck in processing-stopped for 30s, returning PendingTimeout", job_id);
+                            if processing_seconds >= 15 {
+                                log::warn!("Job {} stuck in processing-stopped for 15s, returning PendingTimeout", job_id);
                                 let cancel_op = IppOperationBuilder::cancel_job(printer_uri.clone(), job_id).build();
                                 let _ = ipp_client.send(cancel_op).await;
-                                return Err("PendingTimeout: Job stuck in processing-stopped state for 30 seconds".into());
+                                return Err("PendingTimeout: Job stuck in processing-stopped state for 15 seconds".into());
                             }
                         } else if state == 5 {
                             // Actively processing — allow up to 120s before giving up
@@ -347,26 +416,69 @@ pub async fn get_ipp_printers() -> Result<Vec<Printer>, Box<dyn std::error::Erro
         .attributes()
         .groups_of(DelimiterTag::PrinterAttributes)
     {
-        let color_mode = group.attributes()["color-supported"]
-            .value()
-            .as_boolean()
+        let color_mode = group
+            .attributes()
+            .get("color-supported")
+            .and_then(|attr| attr.value().as_boolean())
             .map(|is_color| match is_color {
                 true => ColorMode::Color,
                 false => ColorMode::Monochrome,
             })
-            .unwrap();
+            .unwrap_or(ColorMode::Color);
 
-        let uri = group.attributes()["printer-uri-supported"]
-            .value()
-            .to_string();
+        let uri = group
+            .attributes()
+            .get("printer-uri-supported")
+            .map(|attr| attr.value().to_string())
+            .unwrap_or_else(|| {
+                if let Some(name_attr) = group.attributes().get("printer-name") {
+                    format!("ipp://localhost:631/printers/{}", name_attr.value())
+                } else {
+                    "ipp://localhost:631/printers/unknown".to_string()
+                }
+            });
 
         let name = group
             .attributes()
             .get("printer-name")
             .map(|attr| attr.value().to_string())
-            .unwrap_or_else(|| uri.clone());
+            .unwrap_or_else(|| {
+                uri.split('/').last().unwrap_or("Printer").to_string()
+            });
 
-        printers.push(Printer { uri, name, color_mode, paused: false });
+        let media_default = group
+            .attributes()
+            .get("media-default")
+            .map(|attr| attr.value().to_string())
+            .unwrap_or_else(|| "iso_a4_210x297mm".to_string());
+
+        let media_source_default = group
+            .attributes()
+            .get("media-source-default")
+            .map(|attr| attr.value().to_string())
+            .unwrap_or_else(|| "auto".to_string());
+
+        let orientation_default = group
+            .attributes()
+            .get("orientation-requested-default")
+            .map(|attr| attr.value().to_string())
+            .unwrap_or_else(|| "portrait".to_string());
+
+        let sides_default = group
+            .attributes()
+            .get("sides-default")
+            .map(|attr| attr.value().to_string())
+            .unwrap_or_else(|| "one-sided".to_string());
+
+        let properties = Some(crate::types::PrinterProperties {
+            media: media_default,
+            media_source: media_source_default,
+            orientation: orientation_default,
+            print_quality: "normal".to_string(),
+            sides: sides_default,
+        });
+
+        printers.push(Printer { uri, name, color_mode, paused: false, properties });
     }
 
     Ok(printers)
