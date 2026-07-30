@@ -44,17 +44,73 @@ pub struct PrintAttributes {
     pub order: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Config {
-    pub redis_url: String,
     pub s3_base_url: String,
+
     #[serde(default)]
     pub webhook_url: Option<String>,
     #[serde(default)]
     pub printf_key: Option<String>,
     pub base_url: String,
+    #[serde(default, alias = "cf_account_id", alias = "accountId")]
+    pub cf_account_id: Option<String>,
+    #[serde(default, alias = "cf_queue_id", alias = "queueId", alias = "cf_queue_name", alias = "queueName")]
+    pub cf_queue_id: Option<String>,
+    #[serde(default, alias = "cf_api_token", alias = "apiToken", alias = "cf_token")]
+    pub cf_api_token: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CfQueuePullRequest {
+    pub visibility_timeout_ms: u32,
+    pub batch_size: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CfQueueMessage {
+    pub id: String,
+    pub lease_id: String,
+    pub body: serde_json::Value,
+    #[serde(default)]
+    pub timestamp_ms: Option<u64>,
+    #[serde(default)]
+    pub attempts: Option<u32>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CfQueuePullResult {
+    #[serde(default)]
+    pub message_backlog_count: Option<u64>,
+    #[serde(default)]
+    pub messages: Vec<CfQueueMessage>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CfQueuePullResponse {
+    pub success: bool,
+    #[serde(default)]
+    pub errors: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub result: Option<CfQueuePullResult>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CfLeaseId {
+    pub lease_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay_seconds: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CfAckRequest {
+    pub acks: Vec<CfLeaseId>,
+    pub retries: Vec<CfLeaseId>,
+}
+
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
