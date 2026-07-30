@@ -15,7 +15,28 @@ impl ColorMode {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrinterProperties {
+    #[serde(default = "default_media")]
+    pub media: String,
+    #[serde(default = "default_media_source")]
+    pub media_source: String,
+    #[serde(default = "default_orientation")]
+    pub orientation: String,
+    #[serde(default = "default_print_quality")]
+    pub print_quality: String,
+    #[serde(default = "default_sides")]
+    pub sides: String,
+}
+
+fn default_media() -> String { "iso_a4_210x297mm".to_string() }
+fn default_media_source() -> String { "auto".to_string() }
+fn default_orientation() -> String { "portrait".to_string() }
+fn default_print_quality() -> String { "normal".to_string() }
+fn default_sides() -> String { "one-sided".to_string() }
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Printer {
     pub uri: String,
@@ -23,6 +44,8 @@ pub struct Printer {
     pub color_mode: ColorMode,
     #[serde(default)]
     pub paused: bool,
+    #[serde(default)]
+    pub properties: Option<PrinterProperties>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

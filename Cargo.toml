@@ -15,9 +15,7 @@ ftail = "0.3.0"
 log = "0.4.27"
 dirs = "6.0.0"
 base64 = "0.22"
-tauri = { version = "2", features = ["wry"] }
+chrono = "0.4"
+dioxus = { version = "0.6", features = ["desktop"] }
 
-
-[build-dependencies]
-tauri-build = { version = "2", features = [] }
 
