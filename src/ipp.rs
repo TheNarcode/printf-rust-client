@@ -405,8 +405,22 @@ fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String
     attrs
 }
 
-pub async fn get_ipp_printers() -> Result<Vec<Printer>, Box<dyn std::error::Error + Send + Sync>> {
-    let client = AsyncIppClient::builder("http://localhost:631".parse()?).build();
+fn format_ipp_uri(path: &str, creds: Option<(&str, &str)>) -> String {
+    if let Some((u, p)) = creds {
+        if !u.is_empty() && !p.is_empty() {
+            format!("http://{}:{}@localhost:631{}", u, p, path)
+        } else {
+            format!("http://localhost:631{}", path)
+        }
+    } else {
+        format!("http://localhost:631{}", path)
+    }
+}
+
+pub async fn get_ipp_printers(creds: Option<(&str, &str)>) -> Result<Vec<Printer>, Box<dyn std::error::Error + Send + Sync>> {
+    let uri_str = format_ipp_uri("", creds);
+    let uri: Uri = uri_str.parse()?;
+    let client = AsyncIppClient::builder(uri).build();
     let operation = IppOperationBuilder::cups().get_printers();
     let result = client.send(operation).await?;
 
@@ -430,13 +444,7 @@ pub async fn get_ipp_printers() -> Result<Vec<Printer>, Box<dyn std::error::Erro
             .attributes()
             .get("printer-uri-supported")
             .map(|attr| attr.value().to_string())
-            .unwrap_or_else(|| {
-                if let Some(name_attr) = group.attributes().get("printer-name") {
-                    format!("ipp://localhost:631/printers/{}", name_attr.value())
-                } else {
-                    "ipp://localhost:631/printers/unknown".to_string()
-                }
-            });
+            .unwrap_or_else(|| "unknown".to_string());
 
         let name = group
             .attributes()
@@ -484,7 +492,7 @@ pub async fn get_ipp_printers() -> Result<Vec<Printer>, Box<dyn std::error::Erro
     Ok(printers)
 }
 
-pub async fn fetch_printer_properties_via_ipp(name: &str) -> (crate::types::PrinterProperties, ColorMode) {
+pub async fn fetch_printer_properties_via_ipp(name: &str, creds: Option<(&str, &str)>) -> (crate::types::PrinterProperties, ColorMode) {
     let mut media = "iso_a4_210x297mm".to_string();
     let mut media_source = "auto".to_string();
     let mut orientation = "portrait".to_string();
@@ -492,7 +500,7 @@ pub async fn fetch_printer_properties_via_ipp(name: &str) -> (crate::types::Prin
     let mut sides = "one-sided".to_string();
     let mut color_mode = ColorMode::Color;
 
-    let uri_str = format!("http://localhost:631/printers/{}", name);
+    let uri_str = format_ipp_uri(&format!("/printers/{}", name), creds);
     if let Ok(uri) = uri_str.parse::<Uri>() {
         let client = AsyncIppClient::builder(uri.clone()).build();
         let operation = IppOperationBuilder::get_printer_attributes(uri)
@@ -556,6 +564,7 @@ pub async fn save_printer_properties_via_ipp(
     name: &str,
     props: &crate::types::PrinterProperties,
     color_mode: &ColorMode,
+    creds: Option<(&str, &str)>,
 ) -> Result<(), String> {
     let color_val = match color_mode {
         ColorMode::Color => "color",
@@ -567,7 +576,7 @@ pub async fn save_printer_properties_via_ipp(
         _ => 3,
     };
 
-    let uri_str = format!("http://localhost:631/printers/{}", name);
+    let uri_str = format_ipp_uri(&format!("/printers/{}", name), creds);
     let uri: Uri = uri_str.parse().map_err(|e| format!("Invalid printer URI: {}", e))?;
     let client = AsyncIppClient::builder(uri.clone()).build();
 
@@ -612,8 +621,9 @@ pub async fn add_appsocket_printer_via_ipp(
     ip: &str,
     port: u16,
     color_mode: ColorMode,
+    creds: Option<(&str, &str)>,
 ) -> Result<(), String> {
-    let uri_str = format!("http://localhost:631/printers/{}", name);
+    let uri_str = format_ipp_uri(&format!("/printers/{}", name), creds);
     let uri: Uri = uri_str.parse().map_err(|e| format!("Invalid printer URI: {}", e))?;
     let client = AsyncIppClient::builder(uri.clone()).build();
 

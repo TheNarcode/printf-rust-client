@@ -83,6 +83,11 @@ pub struct Config {
     pub cf_queue_id: Option<String>,
     #[serde(default, alias = "cf_api_token", alias = "apiToken", alias = "cf_token")]
     pub cf_api_token: Option<String>,
+
+    #[serde(default)]
+    pub cups_username: Option<String>,
+    #[serde(default)]
+    pub cups_password: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
