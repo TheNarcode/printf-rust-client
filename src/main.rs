@@ -478,24 +478,61 @@ async fn get_jobs(state: Arc<AppState>) -> Vec<JobInfo> {
 }
 
 async fn get_completed_orders(state: Arc<AppState>) -> Result<Vec<ApiOrder>, String> {
-    let url = format!("{}/client/completed", BASE_URL);
+    let url = format!("{}/client/orders", BASE_URL);
     let mut req = state.http_client.get(&url);
     if let Some(ref key) = state.config.printf_key {
         req = req.header("x-printf-key", key.as_str());
     }
-    let resp = req.send().await.map_err(|e| format!("Failed to fetch completed orders: {}", e))?;
-    let orders = resp.json::<Vec<ApiOrder>>().await.map_err(|e| format!("Failed to parse completed orders: {}", e))?;
-    Ok(orders)
+    let resp = req.send().await.map_err(|e| format!("Failed to fetch orders: {}", e))?;
+    let orders = resp.json::<Vec<ApiOrder>>().await.map_err(|e| format!("Failed to parse orders: {}", e))?;
+
+    let filtered: Vec<ApiOrder> = orders
+        .into_iter()
+        .filter(|o| o.status.unwrap_or(0) == 1 || o.status.unwrap_or(0) == 3 || o.paid.unwrap_or(false))
+        .collect();
+
+    Ok(filtered)
+}
+
+pub async fn fetch_printer_properties_from_cups(name: &str) -> (crate::types::PrinterProperties, crate::types::ColorMode) {
+    crate::ipp::fetch_printer_properties_via_ipp(name).await
 }
 
 async fn get_printer_list(state: Arc<AppState>) -> Result<Vec<Printer>, String> {
-    let pm_lock = state.printer_manager.lock().await;
-    if let Some(ref pm) = *pm_lock {
-        Ok(pm.get_printers())
-    } else {
-        drop(pm_lock);
-        crate::ipp::get_ipp_printers().await.map_err(|e| e.to_string())
+    let list = crate::ipp::get_ipp_printers().await.map_err(|e| e.to_string())?;
+    let mut updated_list = Vec::new();
+
+    let paused_map: HashMap<String, bool> = {
+        let pm_lock = state.printer_manager.lock().await;
+        if let Some(ref pm) = *pm_lock {
+            pm.get_printers().into_iter().map(|p| (p.name.clone(), p.paused)).collect()
+        } else {
+            HashMap::new()
+        }
+    };
+
+    for mut p in list {
+        let (props, color) = fetch_printer_properties_from_cups(&p.name).await;
+        p.properties = Some(props);
+        p.color_mode = color;
+        if let Some(&is_paused) = paused_map.get(&p.name) {
+            p.paused = is_paused;
+        }
+        updated_list.push(p);
     }
+
+    let mut pm_lock = state.printer_manager.lock().await;
+    if let Some(ref mut pm) = *pm_lock {
+        for p in &updated_list {
+            if let Some(props) = &p.properties {
+                pm.set_printer_properties(&p.name, props.clone(), p.color_mode.clone());
+            }
+        }
+    } else {
+        *pm_lock = Some(PrinterManager::new(updated_list.clone()));
+    }
+
+    Ok(updated_list)
 }
 
 async fn pause_printer(uri: String, state: Arc<AppState>) -> Result<(), String> {
@@ -531,42 +568,9 @@ async fn add_appsocket_printer(
         return Err("Printer name and IP address are required".to_string());
     }
 
-    let uri = format!("socket://{}:{}", ip.trim(), port);
-    let output = tokio::process::Command::new("lpadmin")
-        .arg("-p")
-        .arg(&clean_name)
-        .arg("-v")
-        .arg(&uri)
-        .arg("-E")
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run lpadmin command: {}", e))?;
-
-    if output.status.success() {
-        let color_val = if color_mode == crate::types::ColorMode::Color {
-            "color"
-        } else {
-            "monochrome"
-        };
-        let _ = tokio::process::Command::new("lpadmin")
-            .arg("-p")
-            .arg(&clean_name)
-            .arg("-o")
-            .arg(format!("print-color-mode={}", color_val))
-            .output()
-            .await;
-
-        log::info!(
-            "Successfully added AppSocket printer {} ({}) to CUPS",
-            clean_name,
-            uri
-        );
-        Ok(format!("AppSocket printer {} added successfully", clean_name))
-    } else {
-        let err = String::from_utf8_lossy(&output.stderr);
-        log::error!("lpadmin error: {}", err);
-        Err(format!("Failed to add printer to CUPS: {}", err))
-    }
+    crate::ipp::add_appsocket_printer_via_ipp(&clean_name, &ip, port, color_mode).await?;
+    log::info!("Successfully added AppSocket printer {} via IPP HTTP", clean_name);
+    Ok(format!("AppSocket printer {} added successfully", clean_name))
 }
 
 async fn save_printer_properties(
@@ -575,27 +579,7 @@ async fn save_printer_properties(
     color_mode: crate::types::ColorMode,
     state: Arc<AppState>,
 ) -> Result<(), String> {
-    let color_val = if color_mode == crate::types::ColorMode::Color {
-        "color"
-    } else {
-        "monochrome"
-    };
-
-    let _ = tokio::process::Command::new("lpadmin")
-        .arg("-p")
-        .arg(&name)
-        .arg("-o")
-        .arg(format!("media={}", props.media))
-        .arg("-o")
-        .arg(format!("input-slot={}", props.media_source))
-        .arg("-o")
-        .arg(format!("orientation-requested={}", props.orientation))
-        .arg("-o")
-        .arg(format!("sides={}", props.sides))
-        .arg("-o")
-        .arg(format!("print-color-mode={}", color_val))
-        .output()
-        .await;
+    let _ = crate::ipp::save_printer_properties_via_ipp(&name, &props, &color_mode).await;
 
     let mut pm_lock = state.printer_manager.lock().await;
     if let Some(ref mut pm) = *pm_lock {
@@ -1274,33 +1258,40 @@ fn App() -> Element {
                                                             for order in filtered {
                                                                 {
                                                                     let order_id = order.id.clone();
+                                                                    let is_collected = order.status == Some(3);
                                                                     let app_state_mark = app_state.clone();
                                                                     rsx! {
                                                                         div { class: "completed-order-row", key: "{order_id}",
                                                                             div { class: "job-info",
                                                                                 div { class: "job-id", "Order #{order_id}" }
-                                                                                div { class: "job-meta", "Ready for pickup" }
+                                                                                div { class: "job-meta",
+                                                                                    if is_collected { "Collected" } else { "Ready for pickup" }
+                                                                                }
                                                                             }
                                                                             div { class: "job-actions",
-                                                                                button {
-                                                                                    class: "btn btn-primary btn-sm",
-                                                                                    onclick: {
-                                                                                        let state = app_state_mark.clone();
-                                                                                        let o_id = order_id.clone();
-                                                                                        move |_| {
-                                                                                            log::info!("Mark Collected clicked for {}", o_id);
-                                                                                            let state = state.clone();
-                                                                                            let o_id = o_id.clone();
-                                                                                            spawn(async move {
-                                                                                                if mark_order_collected(o_id, state.clone()).await.is_ok() {
-                                                                                                    if let Ok(orders) = get_completed_orders(state).await {
-                                                                                                        completed_orders.set(orders);
+                                                                                if !is_collected {
+                                                                                    button {
+                                                                                        class: "btn btn-primary btn-sm",
+                                                                                        onclick: {
+                                                                                            let state = app_state_mark.clone();
+                                                                                            let o_id = order_id.clone();
+                                                                                            move |_| {
+                                                                                                log::info!("Mark Collected clicked for {}", o_id);
+                                                                                                let state = state.clone();
+                                                                                                let o_id = o_id.clone();
+                                                                                                spawn(async move {
+                                                                                                    if mark_order_collected(o_id, state.clone()).await.is_ok() {
+                                                                                                        if let Ok(orders) = get_completed_orders(state).await {
+                                                                                                            completed_orders.set(orders);
+                                                                                                        }
                                                                                                     }
-                                                                                                }
-                                                                                            });
-                                                                                        }
-                                                                                    },
-                                                                                    "Mark Collected"
+                                                                                                });
+                                                                                            }
+                                                                                        },
+                                                                                        "Mark Collected"
+                                                                                    }
+                                                                                } else {
+                                                                                    span { style: "color: #10b981; font-size: 0.85rem; font-weight: 600;", "✓ Collected" }
                                                                                 }
                                                                             }
                                                                         }
@@ -1386,21 +1377,21 @@ fn App() -> Element {
                                                                             let printer_obj = printer_obj.clone();
                                                                             move |_| {
                                                                                 log::info!("Edit Printer Properties clicked for {}", printer_obj.name);
-                                                                                if let Some(props) = &printer_obj.properties {
-                                                                                    edit_media.set(props.media.clone());
-                                                                                    edit_media_source.set(props.media_source.clone());
-                                                                                    edit_orientation.set(props.orientation.clone());
-                                                                                    edit_print_quality.set(props.print_quality.clone());
-                                                                                    edit_sides.set(props.sides.clone());
-                                                                                } else {
-                                                                                    edit_media.set("iso_a4_210x297mm".to_string());
-                                                                                    edit_media_source.set("auto".to_string());
-                                                                                    edit_orientation.set("portrait".to_string());
-                                                                                    edit_print_quality.set("normal".to_string());
-                                                                                    edit_sides.set("one-sided".to_string());
-                                                                                }
-                                                                                edit_color.set(printer_obj.color_mode.clone());
-                                                                                editing_printer.set(Some(printer_obj.clone()));
+                                                                                let name = printer_obj.name.clone();
+                                                                                let mut printer_to_edit = printer_obj.clone();
+                                                                                spawn(async move {
+                                                                                    let (fetched_props, fetched_color) = fetch_printer_properties_from_cups(&name).await;
+                                                                                    edit_media.set(fetched_props.media.clone());
+                                                                                    edit_media_source.set(fetched_props.media_source.clone());
+                                                                                    edit_orientation.set(fetched_props.orientation.clone());
+                                                                                    edit_print_quality.set(fetched_props.print_quality.clone());
+                                                                                    edit_sides.set(fetched_props.sides.clone());
+                                                                                    edit_color.set(fetched_color.clone());
+
+                                                                                    printer_to_edit.properties = Some(fetched_props);
+                                                                                    printer_to_edit.color_mode = fetched_color;
+                                                                                    editing_printer.set(Some(printer_to_edit));
+                                                                                });
                                                                             }
                                                                         },
                                                                         "Properties"

@@ -483,3 +483,170 @@ pub async fn get_ipp_printers() -> Result<Vec<Printer>, Box<dyn std::error::Erro
 
     Ok(printers)
 }
+
+pub async fn fetch_printer_properties_via_ipp(name: &str) -> (crate::types::PrinterProperties, ColorMode) {
+    let mut media = "iso_a4_210x297mm".to_string();
+    let mut media_source = "auto".to_string();
+    let mut orientation = "portrait".to_string();
+    let mut print_quality = "normal".to_string();
+    let mut sides = "one-sided".to_string();
+    let mut color_mode = ColorMode::Color;
+
+    let uri_str = format!("http://localhost:631/printers/{}", name);
+    if let Ok(uri) = uri_str.parse::<Uri>() {
+        let client = AsyncIppClient::builder(uri.clone()).build();
+        let operation = IppOperationBuilder::get_printer_attributes(uri)
+            .attributes(&[
+                "media-default",
+                "media-source-default",
+                "orientation-requested-default",
+                "sides-default",
+                "print-color-mode-default",
+                "color-supported",
+            ])
+            .build();
+
+        if let Ok(response) = client.send(operation).await {
+            for group in response.attributes().groups_of(DelimiterTag::PrinterAttributes) {
+                if let Some(attr) = group.attributes().get("media-default") {
+                    media = attr.value().to_string();
+                }
+                if let Some(attr) = group.attributes().get("media-source-default") {
+                    media_source = attr.value().to_string();
+                }
+                if let Some(attr) = group.attributes().get("orientation-requested-default") {
+                    let val_str = attr.value().to_string();
+                    if val_str == "4" || val_str.to_lowercase().contains("landscape") {
+                        orientation = "landscape".to_string();
+                    } else {
+                        orientation = "portrait".to_string();
+                    }
+                }
+                if let Some(attr) = group.attributes().get("sides-default") {
+                    sides = attr.value().to_string();
+                }
+                if let Some(attr) = group.attributes().get("print-color-mode-default") {
+                    let val_str = attr.value().to_string();
+                    if val_str.to_lowercase().contains("mono") || val_str.to_lowercase().contains("gray") {
+                        color_mode = ColorMode::Monochrome;
+                    } else {
+                        color_mode = ColorMode::Color;
+                    }
+                } else if let Some(attr) = group.attributes().get("color-supported") {
+                    if let Some(is_color) = attr.value().as_boolean() {
+                        color_mode = if *is_color { ColorMode::Color } else { ColorMode::Monochrome };
+                    }
+                }
+            }
+        }
+    }
+
+    let props = crate::types::PrinterProperties {
+        media,
+        media_source,
+        orientation,
+        print_quality,
+        sides,
+    };
+
+    (props, color_mode)
+}
+
+pub async fn save_printer_properties_via_ipp(
+    name: &str,
+    props: &crate::types::PrinterProperties,
+    color_mode: &ColorMode,
+) -> Result<(), String> {
+    let color_val = match color_mode {
+        ColorMode::Color => "color",
+        ColorMode::Monochrome => "monochrome",
+    };
+
+    let orient_val = match props.orientation.as_str() {
+        "landscape" => 4,
+        _ => 3,
+    };
+
+    let uri_str = format!("http://localhost:631/printers/{}", name);
+    let uri: Uri = uri_str.parse().map_err(|e| format!("Invalid printer URI: {}", e))?;
+    let client = AsyncIppClient::builder(uri.clone()).build();
+
+    let mut request = IppRequestResponse::new(IppVersion::v2_0(), Operation::CupsAddModifyPrinter, Some(uri));
+
+    request.attributes_mut().add(
+        DelimiterTag::PrinterAttributes,
+        IppAttribute::new("media-default", IppValue::Keyword(props.media.clone())),
+    );
+    request.attributes_mut().add(
+        DelimiterTag::PrinterAttributes,
+        IppAttribute::new("media-source-default", IppValue::Keyword(props.media_source.clone())),
+    );
+    request.attributes_mut().add(
+        DelimiterTag::PrinterAttributes,
+        IppAttribute::new("orientation-requested-default", IppValue::Enum(orient_val)),
+    );
+    request.attributes_mut().add(
+        DelimiterTag::PrinterAttributes,
+        IppAttribute::new("sides-default", IppValue::Keyword(props.sides.clone())),
+    );
+    request.attributes_mut().add(
+        DelimiterTag::PrinterAttributes,
+        IppAttribute::new("print-color-mode-default", IppValue::Keyword(color_val.to_string())),
+    );
+
+    match client.send(request).await {
+        Ok(response) => {
+            if response.header().status_code().is_success() {
+                log::info!("Successfully saved printer properties for {} via IPP HTTP to localhost:631", name);
+                Ok(())
+            } else {
+                Err(format!("CUPS IPP status error: {:?}", response.header().status_code()))
+            }
+        }
+        Err(e) => Err(format!("Failed IPP HTTP request to localhost:631: {}", e)),
+    }
+}
+
+pub async fn add_appsocket_printer_via_ipp(
+    name: &str,
+    ip: &str,
+    port: u16,
+    color_mode: ColorMode,
+) -> Result<(), String> {
+    let uri_str = format!("http://localhost:631/printers/{}", name);
+    let uri: Uri = uri_str.parse().map_err(|e| format!("Invalid printer URI: {}", e))?;
+    let client = AsyncIppClient::builder(uri.clone()).build();
+
+    let device_uri = format!("socket://{}:{}", ip.trim(), port);
+    let mut request = IppRequestResponse::new(IppVersion::v2_0(), Operation::CupsAddModifyPrinter, Some(uri));
+
+    request.attributes_mut().add(
+        DelimiterTag::PrinterAttributes,
+        IppAttribute::new("device-uri", IppValue::Uri(device_uri)),
+    );
+    request.attributes_mut().add(
+        DelimiterTag::PrinterAttributes,
+        IppAttribute::new("printer-is-accepting-jobs", IppValue::Boolean(true)),
+    );
+
+    let color_val = match color_mode {
+        ColorMode::Color => "color",
+        ColorMode::Monochrome => "monochrome",
+    };
+    request.attributes_mut().add(
+        DelimiterTag::PrinterAttributes,
+        IppAttribute::new("print-color-mode-default", IppValue::Keyword(color_val.to_string())),
+    );
+
+    match client.send(request).await {
+        Ok(response) => {
+            if response.header().status_code().is_success() {
+                log::info!("Successfully added AppSocket printer {} via IPP HTTP to localhost:631", name);
+                Ok(())
+            } else {
+                Err(format!("CUPS IPP status: {:?}", response.header().status_code()))
+            }
+        }
+        Err(e) => Err(format!("Failed IPP HTTP request to localhost:631: {}", e)),
+    }
+}

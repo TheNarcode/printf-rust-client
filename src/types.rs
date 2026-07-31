@@ -145,34 +145,53 @@ pub struct JobInfo {
     pub updated_at: String,
 }
 
-// Types for the /client/orders API response
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiFile {
+    #[serde(default)]
     pub file_id: String,
-    pub order: String,
-    pub orientation: String,
-    pub color: String,
-    pub copies: String,
-    pub paper_format: String,
-    pub page_ranges: String,
-    pub number_up: String,
-    pub sides: String,
-    pub print_scaling: String,
-    pub document_format: String,
+    #[serde(default)]
+    pub order: Option<String>,
+    #[serde(default)]
+    pub orientation: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub copies: Option<String>,
+    #[serde(default)]
+    pub paper_format: Option<String>,
+    #[serde(default)]
+    pub page_ranges: Option<String>,
+    #[serde(default)]
+    pub number_up: Option<String>,
+    #[serde(default)]
+    pub sides: Option<String>,
+    #[serde(default)]
+    pub print_scaling: Option<String>,
+    #[serde(default)]
+    pub document_format: Option<String>,
+    #[serde(default)]
     pub printed: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiOrder {
-    pub email: String,
     pub id: String,
-    pub amount: f64,
-    pub payment_request_id: String,
-    pub paid: bool,
-    pub status: i32,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub amount: Option<f64>,
+    #[serde(default)]
+    pub payment_request_id: Option<String>,
+    #[serde(default)]
+    pub paid: Option<bool>,
+    #[serde(default)]
+    pub status: Option<i32>,
+    #[serde(default)]
     pub printer_name: Option<String>,
-    pub created_at: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
     pub files: Vec<ApiFile>,
 }
