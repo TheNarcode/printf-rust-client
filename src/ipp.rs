@@ -125,13 +125,31 @@ impl PrinterManager {
 pub async fn print_job(
     printer_uri: Uri,
     printer_name: String,
-    attributes: PrintAttributes,
+    mut attributes: PrintAttributes,
     media_source: Option<String>,
     config: Arc<Config>,
     http_client: Arc<reqwest::Client>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let file = download_file(attributes.file_id.clone(), &config, &http_client).await?;
-    let payload = IppPayload::new_async(file);
+    let raw_cursor = download_file(attributes.file_id.clone(), &config, &http_client).await?;
+    let raw_bytes = raw_cursor.into_inner();
+
+    let final_bytes = if !attributes.page_ranges.trim().is_empty() {
+        match slice_pdf_bytes(&raw_bytes, &attributes.page_ranges) {
+            Ok(sliced) => {
+                log::info!("Pre-sliced PDF for page ranges '{}'", attributes.page_ranges);
+                attributes.page_ranges = String::new();
+                sliced
+            }
+            Err(e) => {
+                log::warn!("Failed to pre-slice PDF bytes, sending raw file: {}", e);
+                raw_bytes.to_vec()
+            }
+        }
+    } else {
+        raw_bytes.to_vec()
+    };
+
+    let payload = IppPayload::new_async(Cursor::new(final_bytes));
 
     let print_job = IppOperationBuilder::print_job(printer_uri.clone(), payload)
         .attributes(build_ipp_attributes(attributes.clone(), media_source))
@@ -334,6 +352,57 @@ async fn download_file(
     let response = http_client.get(&file_url).send().await?;
     let bytes = response.bytes().await?;
     Ok(Cursor::new(bytes))
+}
+
+fn parse_page_numbers(s: &str, max_pages: u32) -> Vec<u32> {
+    let mut result = Vec::new();
+    for part in s.split(',') {
+        let part = part.trim();
+        if part.contains('-') {
+            let mut split = part.split('-');
+            if let (Some(start_str), Some(end_str)) = (split.next(), split.next()) {
+                if let (Ok(start), Ok(end)) = (start_str.trim().parse::<u32>(), end_str.trim().parse::<u32>()) {
+                    for page in start..=end {
+                        if page >= 1 && page <= max_pages {
+                            result.push(page);
+                        }
+                    }
+                }
+            }
+        } else if let Ok(num) = part.parse::<u32>() {
+            if num >= 1 && num <= max_pages {
+                result.push(num);
+            }
+        }
+    }
+    result
+}
+
+pub fn slice_pdf_bytes(pdf_bytes: &[u8], page_ranges_str: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    if page_ranges_str.trim().is_empty() {
+        return Ok(pdf_bytes.to_vec());
+    }
+
+    let mut doc = lopdf::Document::load_mem(pdf_bytes)?;
+    let total_pages = doc.get_pages().len() as u32;
+    let selected_pages = parse_page_numbers(page_ranges_str, total_pages);
+
+    if selected_pages.is_empty() {
+        return Ok(pdf_bytes.to_vec());
+    }
+
+    let all_pages: std::collections::HashSet<u32> = doc.get_pages().keys().cloned().collect();
+    let selected_set: std::collections::HashSet<u32> = selected_pages.into_iter().collect();
+
+    let pages_to_delete: Vec<u32> = all_pages.difference(&selected_set).cloned().collect();
+    if !pages_to_delete.is_empty() {
+        doc.delete_pages(&pages_to_delete);
+        doc.prune_objects();
+    }
+
+    let mut output = Vec::new();
+    doc.save_to(&mut output)?;
+    Ok(output)
 }
 
 fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String>) -> Vec<IppAttribute> {
