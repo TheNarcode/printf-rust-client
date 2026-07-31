@@ -1843,15 +1843,33 @@ fn main() {
         job_store,
     });
 
+    let icon_bytes = include_bytes!("../icons/icon.png");
+    let window_icon = match image::load_from_memory(icon_bytes) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            let (width, height) = rgba.dimensions();
+            dioxus::desktop::tao::window::Icon::from_rgba(rgba.into_raw(), width, height).ok()
+        }
+        Err(e) => {
+            log::warn!("Failed to load app icon from icons/icon.png: {}", e);
+            None
+        }
+    };
+
+    let mut window_builder = WindowBuilder::new()
+        .with_title("printf")
+        .with_decorations(true)
+        .with_transparent(false)
+        .with_maximized(true)
+        .with_resizable(true);
+
+    if let Some(icon) = window_icon {
+        window_builder = window_builder.with_window_icon(Some(icon));
+    }
+
     let desktop_config = DesktopConfig::new()
-        .with_window(
-            WindowBuilder::new()
-                .with_title("printf")
-                .with_decorations(true)
-                .with_transparent(false)
-                .with_maximized(true)
-                .with_resizable(true),
-        );
+        .with_window(window_builder)
+        .with_menu(None);
 
     dioxus::LaunchBuilder::desktop()
         .with_cfg(desktop_config)
