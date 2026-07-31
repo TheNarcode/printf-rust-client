@@ -202,12 +202,27 @@ async fn dispatch_job_batch(
     for mut attributes in attributes_list {
         let is_color = attributes.color == crate::types::ColorMode::Color;
         let printer = if let Some(target) = &attributes.target_printer {
-            crate::types::Printer {
-                uri: target.clone(),
-                name: target.clone(),
-                color_mode: attributes.color.clone(),
-                paused: false,
-                properties: None,
+            let pm_lock = pm.lock().await;
+            if let Some(ref pm_ref) = *pm_lock {
+                if let Some(found) = pm_ref.get_printers().iter().find(|p| p.name == *target || p.uri == *target) {
+                    found.clone()
+                } else {
+                    crate::types::Printer {
+                        uri: if target.starts_with("http") || target.starts_with("ipp") { target.clone() } else { format!("ipp://localhost:631/printers/{}", target) },
+                        name: target.clone(),
+                        color_mode: attributes.color.clone(),
+                        paused: false,
+                        properties: None,
+                    }
+                }
+            } else {
+                crate::types::Printer {
+                    uri: if target.starts_with("http") || target.starts_with("ipp") { target.clone() } else { format!("ipp://localhost:631/printers/{}", target) },
+                    name: target.clone(),
+                    color_mode: attributes.color.clone(),
+                    paused: false,
+                    properties: None,
+                }
             }
         } else {
             match attributes.color {
@@ -298,9 +313,11 @@ async fn start_client(state: Arc<AppState>) -> Result<String, String> {
     log::info!("starting printf background client loop");
 
     let pm = Arc::clone(&state.printer_manager);
+    let state_init = Arc::clone(&state);
 
     tokio::spawn(async move {
-        match get_ipp_printers().await {
+        let creds = get_cups_creds(&state_init.config);
+        match get_ipp_printers(creds).await {
             Ok(printers) => {
                 let mut pm_lock = pm.lock().await;
                 if pm_lock.is_none() {
@@ -494,12 +511,21 @@ async fn get_completed_orders(state: Arc<AppState>) -> Result<Vec<ApiOrder>, Str
     Ok(filtered)
 }
 
-pub async fn fetch_printer_properties_from_cups(name: &str) -> (crate::types::PrinterProperties, crate::types::ColorMode) {
-    crate::ipp::fetch_printer_properties_via_ipp(name).await
+fn get_cups_creds(config: &Config) -> Option<(&str, &str)> {
+    match (&config.cups_username, &config.cups_password) {
+        (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => Some((u.as_str(), p.as_str())),
+        _ => None,
+    }
+}
+
+pub async fn fetch_printer_properties_from_cups(name: &str, state: Arc<AppState>) -> (crate::types::PrinterProperties, crate::types::ColorMode) {
+    let creds = get_cups_creds(&state.config);
+    crate::ipp::fetch_printer_properties_via_ipp(name, creds).await
 }
 
 async fn get_printer_list(state: Arc<AppState>) -> Result<Vec<Printer>, String> {
-    let list = crate::ipp::get_ipp_printers().await.map_err(|e| e.to_string())?;
+    let creds = get_cups_creds(&state.config);
+    let list = crate::ipp::get_ipp_printers(creds).await.map_err(|e| e.to_string())?;
     let mut updated_list = Vec::new();
 
     let paused_map: HashMap<String, bool> = {
@@ -512,7 +538,7 @@ async fn get_printer_list(state: Arc<AppState>) -> Result<Vec<Printer>, String> 
     };
 
     for mut p in list {
-        let (props, color) = fetch_printer_properties_from_cups(&p.name).await;
+        let (props, color) = fetch_printer_properties_from_cups(&p.name, state.clone()).await;
         p.properties = Some(props);
         p.color_mode = color;
         if let Some(&is_paused) = paused_map.get(&p.name) {
@@ -562,13 +588,15 @@ async fn add_appsocket_printer(
     ip: String,
     port: u16,
     color_mode: crate::types::ColorMode,
+    state: Arc<AppState>,
 ) -> Result<String, String> {
     let clean_name = name.trim().replace(' ', "_");
     if clean_name.is_empty() || ip.trim().is_empty() {
         return Err("Printer name and IP address are required".to_string());
     }
 
-    crate::ipp::add_appsocket_printer_via_ipp(&clean_name, &ip, port, color_mode).await?;
+    let creds = get_cups_creds(&state.config);
+    crate::ipp::add_appsocket_printer_via_ipp(&clean_name, &ip, port, color_mode, creds).await?;
     log::info!("Successfully added AppSocket printer {} via IPP HTTP", clean_name);
     Ok(format!("AppSocket printer {} added successfully", clean_name))
 }
@@ -579,7 +607,8 @@ async fn save_printer_properties(
     color_mode: crate::types::ColorMode,
     state: Arc<AppState>,
 ) -> Result<(), String> {
-    let _ = crate::ipp::save_printer_properties_via_ipp(&name, &props, &color_mode).await;
+    let creds = get_cups_creds(&state.config);
+    let _ = crate::ipp::save_printer_properties_via_ipp(&name, &props, &color_mode, creds).await;
 
     let mut pm_lock = state.printer_manager.lock().await;
     if let Some(ref mut pm) = *pm_lock {
@@ -747,9 +776,13 @@ fn App() -> Element {
     let mut edit_color = use_signal(|| crate::types::ColorMode::Color);
 
     // Initial printers fetch
-    use_future(move || async move {
-        if let Ok(list) = crate::ipp::get_ipp_printers().await {
-            printers.set(list);
+    let app_state_init = app_state.clone();
+    use_future(move || {
+        let state = app_state_init.clone();
+        async move {
+            if let Ok(list) = get_printer_list(state).await {
+                printers.set(list);
+            }
         }
     });
 
@@ -958,18 +991,28 @@ fn App() -> Element {
                                                                 }
                                                                 div { class: "job-actions",
                                                                     if is_stuck {
-                                                                        select {
-                                                                            class: "custom-select requeue-select",
-                                                                            style: "font-size:0.75rem;padding:0.3rem 1.5rem 0.3rem 0.6rem",
-                                                                            value: selected_requeue_printers().get(&f_id_select).cloned().unwrap_or_default(),
-                                                                            onchange: move |evt| {
-                                                                                let mut map = selected_requeue_printers();
-                                                                                map.insert(f_id_select.clone(), evt.value());
-                                                                                selected_requeue_printers.set(map);
-                                                                            },
-                                                                            option { value: "", disabled: true, selected: true, "Select Printer" }
-                                                                            for p in printers() {
-                                                                                option { value: "{p.uri}", "{p.name}" }
+                                                                        {
+                                                                            let curr_val = selected_requeue_printers().get(&f_id_select).cloned().unwrap_or_default();
+                                                                            rsx! {
+                                                                                select {
+                                                                                    class: "custom-select requeue-select",
+                                                                                    style: "font-size:0.75rem;padding:0.3rem 1.5rem 0.3rem 0.6rem",
+                                                                                    value: "{curr_val}",
+                                                                                    onchange: {
+                                                                                        let f_id = f_id_select.clone();
+                                                                                        move |evt: Event<FormData>| {
+                                                                                            let val = evt.value();
+                                                                                            log::info!("Requeue printer selected for {}: {}", f_id, val);
+                                                                                            let mut map = selected_requeue_printers();
+                                                                                            map.insert(f_id.clone(), val);
+                                                                                            selected_requeue_printers.set(map);
+                                                                                        }
+                                                                                    },
+                                                                                    option { value: "", "Select Printer" }
+                                                                                    for p in printers() {
+                                                                                        option { value: "{p.name}", "{p.name}" }
+                                                                                    }
+                                                                                }
                                                                             }
                                                                         }
                                                                         button {
@@ -981,10 +1024,10 @@ fn App() -> Element {
                                                                                     log::info!("Requeue button clicked for {}", f_id);
                                                                                     let f_id = f_id.clone();
                                                                                     let state = state.clone();
-                                                                                    let uri = selected_requeue_printers().get(&f_id).cloned().unwrap_or_default();
+                                                                                    let target_p_name = selected_requeue_printers().get(&f_id).cloned().unwrap_or_default();
                                                                                     spawn(async move {
-                                                                                        if !uri.is_empty() {
-                                                                                            let _ = requeue_to_printer(f_id, uri, state).await;
+                                                                                        if !target_p_name.is_empty() {
+                                                                                            let _ = requeue_to_printer(f_id, target_p_name, state).await;
                                                                                         }
                                                                                     });
                                                                                 }
@@ -1375,12 +1418,14 @@ fn App() -> Element {
                                                                         style: "font-size: 0.75rem; padding: 0.35rem 0.75rem;",
                                                                         onclick: {
                                                                             let printer_obj = printer_obj.clone();
+                                                                            let state_props = app_state.clone();
                                                                             move |_| {
                                                                                 log::info!("Edit Printer Properties clicked for {}", printer_obj.name);
                                                                                 let name = printer_obj.name.clone();
                                                                                 let mut printer_to_edit = printer_obj.clone();
+                                                                                let state = state_props.clone();
                                                                                 spawn(async move {
-                                                                                    let (fetched_props, fetched_color) = fetch_printer_properties_from_cups(&name).await;
+                                                                                    let (fetched_props, fetched_color) = fetch_printer_properties_from_cups(&name, state).await;
                                                                                     edit_media.set(fetched_props.media.clone());
                                                                                     edit_media_source.set(fetched_props.media_source.clone());
                                                                                     edit_orientation.set(fetched_props.orientation.clone());
@@ -1517,7 +1562,7 @@ fn App() -> Element {
                                         let state = state.clone();
 
                                         spawn(async move {
-                                            match add_appsocket_printer(name, ip, port, color).await {
+                                            match add_appsocket_printer(name, ip, port, color, state.clone()).await {
                                                 Ok(_) => {
                                                     show_add_modal.set(false);
                                                     new_name.set(String::new());
@@ -1780,6 +1825,8 @@ fn main() {
                 cf_account_id: None,
                 cf_queue_id: None,
                 cf_api_token: None,
+                cups_username: None,
+                cups_password: None,
             })
         }
     };
