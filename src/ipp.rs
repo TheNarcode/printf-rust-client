@@ -415,7 +415,7 @@ fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String
         ("media", attributes.paper_format),
         ("page-ranges", attributes.page_ranges),
         ("number-up", attributes.number_up),
-        ("sides", attributes.sides),
+        ("sides", attributes.sides.clone()),
         ("print-scaling", attributes.print_scaling),
         ("document-format", "application/octet-stream".to_string()),
     ]
@@ -469,6 +469,14 @@ fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String
             ("media-source".to_string(), IppValue::Keyword(source))
         ]));
         attrs.push(IppAttribute::new("media-col", media_col));
+    }
+
+    if attributes.sides == "two-sided-short-edge" {
+        attrs.push(IppAttribute::new("BindEdge", IppValue::Keyword("Top".to_string())));
+        attrs.push(IppAttribute::new("binding-edge", IppValue::Keyword("top".to_string())));
+    } else if attributes.sides == "two-sided-long-edge" {
+        attrs.push(IppAttribute::new("BindEdge", IppValue::Keyword("Left".to_string())));
+        attrs.push(IppAttribute::new("binding-edge", IppValue::Keyword("left".to_string())));
     }
 
     attrs
