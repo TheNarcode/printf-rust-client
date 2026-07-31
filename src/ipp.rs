@@ -474,9 +474,13 @@ fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String
     if attributes.sides == "two-sided-short-edge" {
         attrs.push(IppAttribute::new("BindEdge", IppValue::Keyword("Top".to_string())));
         attrs.push(IppAttribute::new("binding-edge", IppValue::Keyword("top".to_string())));
+        attrs.push(IppAttribute::new("Binding", IppValue::Keyword("TopBinding".to_string())));
+        attrs.push(IppAttribute::new("KMDuplex", IppValue::Keyword("2Sided".to_string())));
     } else if attributes.sides == "two-sided-long-edge" {
         attrs.push(IppAttribute::new("BindEdge", IppValue::Keyword("Left".to_string())));
         attrs.push(IppAttribute::new("binding-edge", IppValue::Keyword("left".to_string())));
+        attrs.push(IppAttribute::new("Binding", IppValue::Keyword("LeftBinding".to_string())));
+        attrs.push(IppAttribute::new("KMDuplex", IppValue::Keyword("2Sided".to_string())));
     }
 
     attrs
