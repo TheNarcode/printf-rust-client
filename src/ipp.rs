@@ -86,11 +86,7 @@ impl PrinterManager {
         };
 
         let color_media = None;
-        let mono_media = if self.order_counter % 2 == 1 {
-            Some("tray-1".to_string())
-        } else {
-            Some("tray-4".to_string())
-        };
+        let mono_media = None;
 
         (color_printer, mono_printer, color_media, mono_media)
     }
