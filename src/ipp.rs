@@ -125,24 +125,33 @@ pub async fn print_job(
     media_source: Option<String>,
     config: Arc<Config>,
     http_client: Arc<reqwest::Client>,
+    job_store: Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::types::JobInfo>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let raw_cursor = download_file(attributes.file_id.clone(), &config, &http_client).await?;
     let raw_bytes = raw_cursor.into_inner();
 
+    let bytes_after_footer = match process_pdf_footer(&raw_bytes, &attributes) {
+        Ok(f_bytes) => f_bytes,
+        Err(e) => {
+            log::warn!("Failed to process PDF footer/cover page: {}, using raw file", e);
+            raw_bytes.to_vec()
+        }
+    };
+
     let final_bytes = if !attributes.page_ranges.trim().is_empty() {
-        match slice_pdf_bytes(&raw_bytes, &attributes.page_ranges) {
+        match slice_pdf_bytes(&bytes_after_footer, &attributes.page_ranges) {
             Ok(sliced) => {
                 log::info!("Pre-sliced PDF for page ranges '{}'", attributes.page_ranges);
                 attributes.page_ranges = String::new();
                 sliced
             }
             Err(e) => {
-                log::warn!("Failed to pre-slice PDF bytes, sending raw file: {}", e);
-                raw_bytes.to_vec()
+                log::warn!("Failed to pre-slice PDF bytes, sending file with footer: {}", e);
+                bytes_after_footer
             }
         }
     } else {
-        raw_bytes.to_vec()
+        bytes_after_footer
     };
 
     let payload = IppPayload::new_async(Cursor::new(final_bytes));
@@ -164,6 +173,13 @@ pub async fn print_job(
 
     if let Some(job_id) = job_id {
         log::info!("Job ID: {}, starting status polling...", job_id);
+
+        {
+            let mut store = job_store.lock().await;
+            if let Some(info) = store.get_mut(&attributes.file_id) {
+                info.ipp_job_id = Some(job_id);
+            }
+        }
 
         let ipp_client = AsyncIppClient::new(printer_uri.clone());
         let mut pending_seconds = 0i32;
@@ -401,6 +417,183 @@ pub fn slice_pdf_bytes(pdf_bytes: &[u8], page_ranges_str: &str) -> Result<Vec<u8
     Ok(output)
 }
 
+fn sanitize_pdf_text(s: &str) -> String {
+    s.replace('\\', "\\\\")
+     .replace('(', "\\(")
+     .replace(')', "\\)")
+}
+
+fn prepend_pages_to_doc(
+    doc: &mut lopdf::Document,
+    new_page_ids: Vec<lopdf::ObjectId>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let catalog = doc.catalog()?;
+    let pages_id = catalog.get(b"Pages")?.as_reference()?;
+
+    for &page_id in &new_page_ids {
+        if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(lopdf::Object::as_dict_mut) {
+            page_dict.set("Parent", pages_id);
+        }
+    }
+
+    let pages_dict = doc.get_object_mut(pages_id).and_then(lopdf::Object::as_dict_mut)?;
+    let count = pages_dict.get(b"Count")?.as_i64()? + new_page_ids.len() as i64;
+    pages_dict.set("Count", count);
+
+    let kids_obj = pages_dict.get_mut(b"Kids")?;
+    let kids_arr = kids_obj.as_array_mut()?;
+    let mut new_kids: Vec<lopdf::Object> = new_page_ids.into_iter().map(lopdf::Object::Reference).collect();
+    new_kids.append(kids_arr);
+    *kids_arr = new_kids;
+
+    Ok(())
+}
+
+fn create_type1_font(doc: &mut lopdf::Document) -> lopdf::ObjectId {
+    let mut dict = lopdf::Dictionary::new();
+    dict.set("Type", lopdf::Object::Name(b"Font".to_vec()));
+    dict.set("Subtype", lopdf::Object::Name(b"Type1".to_vec()));
+    dict.set("BaseFont", lopdf::Object::Name(b"Helvetica".to_vec()));
+    doc.add_object(dict)
+}
+
+fn ensure_font_on_page(doc: &mut lopdf::Document, page_id: lopdf::ObjectId) {
+    let font_obj_id = create_type1_font(doc);
+
+    let res_ref = doc.get_dictionary(page_id)
+        .ok()
+        .and_then(|dict| dict.get(b"Resources").ok())
+        .and_then(|obj| obj.as_reference().ok());
+
+    if let Some(res_id) = res_ref {
+        if let Ok(res_dict) = doc.get_object_mut(res_id).and_then(lopdf::Object::as_dict_mut) {
+            if let Ok(font_map) = res_dict.get_mut(b"Font").and_then(lopdf::Object::as_dict_mut) {
+                if !font_map.has(b"F1") {
+                    font_map.set("F1", font_obj_id);
+                }
+            } else {
+                let mut font_map = lopdf::Dictionary::new();
+                font_map.set("F1", font_obj_id);
+                res_dict.set("Font", font_map);
+            }
+            return;
+        }
+    }
+
+    if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(lopdf::Object::as_dict_mut) {
+        if let Ok(res_dict) = page_dict.get_mut(b"Resources").and_then(lopdf::Object::as_dict_mut) {
+            if let Ok(font_map) = res_dict.get_mut(b"Font").and_then(lopdf::Object::as_dict_mut) {
+                if !font_map.has(b"F1") {
+                    font_map.set("F1", font_obj_id);
+                }
+            } else {
+                let mut font_map = lopdf::Dictionary::new();
+                font_map.set("F1", font_obj_id);
+                res_dict.set("Font", font_map);
+            }
+        } else {
+            let mut font_map = lopdf::Dictionary::new();
+            font_map.set("F1", font_obj_id);
+            let mut res_dict = lopdf::Dictionary::new();
+            res_dict.set("Font", font_map);
+            page_dict.set("Resources", res_dict);
+        }
+    }
+}
+
+pub fn process_pdf_footer(
+    pdf_bytes: &[u8],
+    attributes: &PrintAttributes,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let token = match &attributes.queue_token_id {
+        Some(t) if !t.trim().is_empty() => t.trim().to_string(),
+        _ => return Ok(pdf_bytes.to_vec()),
+    };
+
+    let footer_enabled = attributes.footer.unwrap_or(true);
+    let mut doc = lopdf::Document::load_mem(pdf_bytes)?;
+
+    if footer_enabled {
+        let pages = doc.get_pages();
+        for (_, page_id) in pages {
+            ensure_font_on_page(&mut doc, page_id);
+            let footer_content = format!(
+                "q 0 0 0 rg 0 0 0 RG BT /F1 10 Tf 36 30 Td ({}) Tj ET Q",
+                sanitize_pdf_text(&token)
+            );
+            let _ = doc.add_page_contents(page_id, footer_content.into_bytes());
+        }
+    } else {
+        let font_obj_id = create_type1_font(&mut doc);
+
+        let font_size = 36.0;
+        let page_width = 595.28;
+        let page_height = 841.89;
+
+        let sanitized_token = sanitize_pdf_text(&token);
+        let char_count = token.chars().count() as f64;
+        let est_text_width = char_count * (font_size * 0.52);
+
+        let mut x = (page_width - est_text_width) / 2.0;
+        if x < 20.0 {
+            x = 20.0;
+        }
+        let y = (page_height / 2.0) - (font_size * 0.3);
+
+        let cover_content = format!(
+            "BT /F1 {:.1} Tf {:.2} {:.2} Td ({}) Tj ET",
+            font_size, x, y, sanitized_token
+        ).into_bytes();
+
+        let content_obj_id = doc.add_object(lopdf::Object::Stream(lopdf::Stream::new(
+            lopdf::Dictionary::new(),
+            cover_content,
+        )));
+
+        let mut font_map = lopdf::Dictionary::new();
+        font_map.set("F1", font_obj_id);
+        let mut res_dict = lopdf::Dictionary::new();
+        res_dict.set("Font", font_map);
+
+        let media_box = vec![
+            lopdf::Object::Real(0.0),
+            lopdf::Object::Real(0.0),
+            lopdf::Object::Real(595.28),
+            lopdf::Object::Real(841.89),
+        ];
+
+        let mut cover_page_dict = lopdf::Dictionary::new();
+        cover_page_dict.set("Type", lopdf::Object::Name(b"Page".to_vec()));
+        cover_page_dict.set("MediaBox", media_box.clone());
+        cover_page_dict.set("Contents", content_obj_id);
+        cover_page_dict.set("Resources", res_dict);
+
+        let cover_page_id = doc.add_object(cover_page_dict);
+        let mut new_page_ids = vec![cover_page_id];
+
+        let is_double_sided = attributes.sides.contains("two-sided");
+        if is_double_sided {
+            let blank_content_obj_id = doc.add_object(lopdf::Object::Stream(lopdf::Stream::new(
+                lopdf::Dictionary::new(),
+                b"BT ET".to_vec(),
+            )));
+            let mut blank_page_dict = lopdf::Dictionary::new();
+            blank_page_dict.set("Type", lopdf::Object::Name(b"Page".to_vec()));
+            blank_page_dict.set("MediaBox", media_box);
+            blank_page_dict.set("Contents", blank_content_obj_id);
+
+            let blank_page_id = doc.add_object(blank_page_dict);
+            new_page_ids.push(blank_page_id);
+        }
+
+        let _ = prepend_pages_to_doc(&mut doc, new_page_ids);
+    }
+
+    let mut output = Vec::new();
+    doc.save_to(&mut output)?;
+    Ok(output)
+}
+
 fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String>) -> Vec<IppAttribute> {
     let mut copies_count = 1;
 
@@ -482,7 +675,7 @@ fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String
     attrs
 }
 
-fn format_ipp_uri(path: &str, creds: Option<(&str, &str)>) -> String {
+pub fn format_ipp_uri(path: &str, creds: Option<(&str, &str)>) -> String {
     if let Some((u, p)) = creds {
         if !u.is_empty() && !p.is_empty() {
             format!("http://{}:{}@localhost:631{}", u, p, path)
@@ -573,7 +766,7 @@ pub async fn fetch_printer_properties_via_ipp(name: &str, creds: Option<(&str, &
     let mut media = "iso_a4_210x297mm".to_string();
     let mut media_source = "auto".to_string();
     let mut orientation = "portrait".to_string();
-    let mut print_quality = "normal".to_string();
+    let print_quality = "normal".to_string();
     let mut sides = "one-sided".to_string();
     let mut color_mode = ColorMode::Color;
 

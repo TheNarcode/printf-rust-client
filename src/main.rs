@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ::ipp::prelude::*;
 use crate::ipp::{PrinterManager, get_ipp_printers, print_job};
 use crate::types::{
     ApiOrder, CfAckRequest, CfLeaseId, CfQueueMessage, CfQueuePullRequest, CfQueuePullResponse,
@@ -50,15 +51,21 @@ async fn update_job_status(
     order_id: Option<String>,
     status: &str,
 ) {
+    let mut store = job_store.lock().await;
+    let (existing_lease, existing_ipp_job_id) = store.get(&attributes.file_id)
+        .map(|info| (info.lease_id.clone(), info.ipp_job_id))
+        .unwrap_or((None, None));
+
     let job_info = JobInfo {
         file_id: attributes.file_id.clone(),
         order_id,
         attributes: attributes.clone(),
         status: status.to_string(),
         updated_at: current_timestamp(),
+        lease_id: existing_lease,
+        ipp_job_id: existing_ipp_job_id,
     };
 
-    let mut store = job_store.lock().await;
     store.insert(attributes.file_id.clone(), job_info);
 
     log::info!(
@@ -68,28 +75,89 @@ async fn update_job_status(
     );
 }
 
+async fn update_job_status_with_lease(
+    job_store: &Arc<Mutex<HashMap<String, JobInfo>>>,
+    attributes: &PrintAttributes,
+    order_id: Option<String>,
+    status: &str,
+    lease_id: Option<String>,
+) {
+    let mut store = job_store.lock().await;
+    let (existing_lease, existing_ipp_job_id) = store.get(&attributes.file_id)
+        .map(|info| (info.lease_id.clone(), info.ipp_job_id))
+        .unwrap_or((None, None));
+    let final_lease = lease_id.or(existing_lease);
+
+    let job_info = JobInfo {
+        file_id: attributes.file_id.clone(),
+        order_id,
+        attributes: attributes.clone(),
+        status: status.to_string(),
+        updated_at: current_timestamp(),
+        lease_id: final_lease,
+        ipp_job_id: existing_ipp_job_id,
+    };
+
+    store.insert(attributes.file_id.clone(), job_info);
+
+    log::info!(
+        "updated job status for {} to {}",
+        attributes.file_id,
+        status
+    );
+}
+
+fn parse_message_body_str(s: &str) -> Result<Vec<PrintAttributes>, String> {
+    if let Ok(order) = serde_json::from_str::<ApiOrder>(s) {
+        if !order.files.is_empty() {
+            return Ok(order.to_print_attributes_list());
+        }
+    }
+    if let Ok(orders) = serde_json::from_str::<Vec<ApiOrder>>(s) {
+        let mut list = Vec::new();
+        for order in orders {
+            list.extend(order.to_print_attributes_list());
+        }
+        if !list.is_empty() {
+            return Ok(list);
+        }
+    }
+    if let Ok(list) = serde_json::from_str::<Vec<PrintAttributes>>(s) {
+        return Ok(list);
+    }
+    if let Ok(single) = serde_json::from_str::<PrintAttributes>(s) {
+        return Ok(vec![single]);
+    }
+    Err(format!("Could not parse body string: {}", s))
+}
+
 fn parse_message_body(body: &serde_json::Value) -> Result<Vec<PrintAttributes>, String> {
     match body {
         serde_json::Value::String(s) => {
             if let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(s.as_bytes()) {
                 if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
-                    if let Ok(list) = serde_json::from_str::<Vec<PrintAttributes>>(&decoded_str) {
+                    if let Ok(list) = parse_message_body_str(&decoded_str) {
                         return Ok(list);
-                    }
-                    if let Ok(single) = serde_json::from_str::<PrintAttributes>(&decoded_str) {
-                        return Ok(vec![single]);
                     }
                 }
             }
-            if let Ok(list) = serde_json::from_str::<Vec<PrintAttributes>>(s) {
-                return Ok(list);
-            }
-            if let Ok(single) = serde_json::from_str::<PrintAttributes>(s) {
-                return Ok(vec![single]);
-            }
-            Err(format!("Could not parse body string: {}", s))
+            parse_message_body_str(s)
         }
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            if let Ok(order) = serde_json::from_value::<ApiOrder>(body.clone()) {
+                if !order.files.is_empty() {
+                    return Ok(order.to_print_attributes_list());
+                }
+            }
+            if let Ok(orders) = serde_json::from_value::<Vec<ApiOrder>>(body.clone()) {
+                let mut list = Vec::new();
+                for order in orders {
+                    list.extend(order.to_print_attributes_list());
+                }
+                if !list.is_empty() {
+                    return Ok(list);
+                }
+            }
             if let Ok(list) = serde_json::from_value::<Vec<PrintAttributes>>(body.clone()) {
                 return Ok(list);
             }
@@ -263,7 +331,7 @@ async fn dispatch_job_batch(
         log::info!("using printer {} ({}) for print", printer.name, printer.uri);
 
         let failed = match printer.uri.parse() {
-            Ok(uri) => match print_job(uri, printer.name.clone(), attributes.clone(), media_source, config_cloned, http_client_cloned).await {
+            Ok(uri) => match print_job(uri, printer.name.clone(), attributes.clone(), media_source, config_cloned, http_client_cloned, Arc::clone(&job_store)).await {
                 Ok(_) => {
                     log::info!("print job successful");
                     None
@@ -412,6 +480,16 @@ async fn start_client(state: Arc<AppState>) -> Result<String, String> {
                                 tokio::spawn(async move {
                                     match parse_message_body(&msg.body) {
                                         Ok(attributes_list) => {
+                                            for attr in &attributes_list {
+                                                update_job_status_with_lease(
+                                                    &job_store,
+                                                    attr,
+                                                    attr.order.clone(),
+                                                    "Queued",
+                                                    Some(msg.lease_id.clone()),
+                                                ).await;
+                                            }
+
                                             let success = dispatch_job_batch(
                                                 attributes_list,
                                                 pm,
@@ -636,7 +714,7 @@ async fn reprint_job(file_id: String, state: Arc<AppState>) -> Result<(), String
             "Queued",
         ).await;
 
-        dispatch_job_batch(
+        let success = dispatch_job_batch(
             vec![job_info.attributes],
             Arc::clone(&state.printer_manager),
             Arc::clone(&state.config),
@@ -644,7 +722,20 @@ async fn reprint_job(file_id: String, state: Arc<AppState>) -> Result<(), String
             Arc::clone(&state.job_store),
         ).await;
 
-        log::info!("re-queued job {} for reprint", file_id);
+        if success {
+            log::info!("re-queued job {} for reprint succeeded", file_id);
+            if let Some(ref lease_id) = job_info.lease_id {
+                let cf_account_id = state.config.cf_account_id.clone();
+                let cf_queue_id = state.config.cf_queue_id.clone();
+                let cf_token = state.config.cf_api_token.clone().or_else(|| state.config.printf_key.clone());
+
+                if let (Some(account_id), Some(queue_id), Some(token)) = (cf_account_id, cf_queue_id, cf_token) {
+                    let acks = vec![CfLeaseId { lease_id: lease_id.clone(), delay_seconds: None }];
+                    let _ = ack_cf_queue_messages(&state.http_client, &account_id, &queue_id, &token, acks, vec![]).await;
+                }
+            }
+        }
+
         Ok(())
     } else {
         Err(format!("Job {} not found in job store", file_id))
@@ -665,6 +756,31 @@ async fn requeue_to_printer(
     }
 
     if let Some(mut job_info) = target_job {
+        if let Some(old_job_id) = job_info.ipp_job_id {
+            if let Some(ref old_printer_name) = job_info.attributes.target_printer {
+                let old_path = if old_printer_name.starts_with('/') {
+                    old_printer_name.clone()
+                } else if old_printer_name.starts_with("http") || old_printer_name.starts_with("ipp") {
+                    if let Ok(u) = old_printer_name.parse::<Uri>() {
+                        u.path().to_string()
+                    } else {
+                        format!("/printers/{}", old_printer_name)
+                    }
+                } else {
+                    format!("/printers/{}", old_printer_name)
+                };
+
+                let creds = get_cups_creds(&state.config);
+                let old_uri_str = crate::ipp::format_ipp_uri(&old_path, creds);
+                if let Ok(parsed_uri) = old_uri_str.parse::<Uri>() {
+                    log::info!("Canceling old CUPS job {} on printer {} ({}) before requeue", old_job_id, old_printer_name, old_uri_str);
+                    let cancel_op = IppOperationBuilder::cancel_job(parsed_uri.clone(), old_job_id).build();
+                    let client = AsyncIppClient::new(parsed_uri);
+                    let _ = client.send(cancel_op).await;
+                }
+            }
+        }
+
         job_info.attributes.target_printer = Some(printer_uri);
 
         update_job_status(
@@ -674,7 +790,7 @@ async fn requeue_to_printer(
             "Queued",
         ).await;
 
-        dispatch_job_batch(
+        let success = dispatch_job_batch(
             vec![job_info.attributes],
             Arc::clone(&state.printer_manager),
             Arc::clone(&state.config),
@@ -682,7 +798,26 @@ async fn requeue_to_printer(
             Arc::clone(&state.job_store),
         ).await;
 
-        log::info!("re-queued stuck job {} to new printer", file_id);
+        if success {
+            log::info!("re-queued stuck job {} to new printer succeeded", file_id);
+
+            if let Some(ref lease_id) = job_info.lease_id {
+                let cf_account_id = state.config.cf_account_id.clone();
+                let cf_queue_id = state.config.cf_queue_id.clone();
+                let cf_token = state.config.cf_api_token.clone().or_else(|| state.config.printf_key.clone());
+
+                if let (Some(account_id), Some(queue_id), Some(token)) = (cf_account_id, cf_queue_id, cf_token) {
+                    log::info!("sending ACK for requeued job {} (lease_id: {})", file_id, lease_id);
+                    let acks = vec![CfLeaseId { lease_id: lease_id.clone(), delay_seconds: None }];
+                    if let Err(e) = ack_cf_queue_messages(&state.http_client, &account_id, &queue_id, &token, acks, vec![]).await {
+                        log::error!("failed to send ACK for requeued job (id: {}): {}", file_id, e);
+                    } else {
+                        log::info!("successfully ACKed requeued job {} to Cloudflare Queue", file_id);
+                    }
+                }
+            }
+        }
+
         Ok(())
     } else {
         Err(format!("Job {} not found in job store", file_id))

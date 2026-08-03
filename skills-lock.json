@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "libreoffice-rs": {
+      "source": "clark-labs-inc/libreoffice-rs",
+      "sourceType": "github",
+      "skillPath": "skills/libreoffice-rs/SKILL.md",
+      "computedHash": "d6ab26f869a4239d1153e8302df25bf7eec55a1cd8d089e30c5a49a5798fff9e"
+    }
+  }
+}

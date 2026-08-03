@@ -65,6 +65,12 @@ pub struct PrintAttributes {
     pub target_printer: Option<String>,
     #[serde(alias = "orderId", default)]
     pub order: Option<String>,
+    #[serde(default)]
+    pub printed: Option<bool>,
+    #[serde(default)]
+    pub footer: Option<bool>,
+    #[serde(default, alias = "queue_token_id", alias = "queueTokenId")]
+    pub queue_token_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -148,6 +154,10 @@ pub struct JobInfo {
     pub attributes: PrintAttributes,
     pub status: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub lease_id: Option<String>,
+    #[serde(default)]
+    pub ipp_job_id: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -179,6 +189,39 @@ pub struct ApiFile {
     pub printed: Option<bool>,
 }
 
+impl ApiFile {
+    pub fn to_print_attributes(
+        &self,
+        order_id: &str,
+        printer_name: Option<String>,
+        footer: Option<bool>,
+        queue_token_id: Option<String>,
+    ) -> PrintAttributes {
+        let color_mode = match self.color.as_deref() {
+            Some("color") | Some("Color") => ColorMode::Color,
+            _ => ColorMode::Monochrome,
+        };
+
+        PrintAttributes {
+            file_id: self.file_id.clone(),
+            orientation: self.orientation.clone().unwrap_or_else(|| "portrait".to_string()),
+            color: color_mode,
+            copies: self.copies.clone().unwrap_or_else(|| "1".to_string()),
+            paper_format: self.paper_format.clone().unwrap_or_else(|| "iso_a4_210x297mm".to_string()),
+            page_ranges: self.page_ranges.clone().unwrap_or_default(),
+            number_up: self.number_up.clone().unwrap_or_else(|| "1".to_string()),
+            sides: self.sides.clone().unwrap_or_else(|| "one-sided".to_string()),
+            document_format: self.document_format.clone().unwrap_or_else(|| "application/octet-stream".to_string()),
+            print_scaling: self.print_scaling.clone().unwrap_or_else(|| "auto".to_string()),
+            target_printer: printer_name,
+            order: self.order.clone().or_else(|| Some(order_id.to_string())),
+            printed: self.printed,
+            footer,
+            queue_token_id,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiOrder {
@@ -196,7 +239,20 @@ pub struct ApiOrder {
     #[serde(default)]
     pub printer_name: Option<String>,
     #[serde(default)]
-    pub created_at: Option<String>,
+    pub footer: Option<bool>,
+    #[serde(default, alias = "queue_token_id", alias = "queueTokenId")]
+    pub queue_token_id: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<serde_json::Value>,
     #[serde(default)]
     pub files: Vec<ApiFile>,
+}
+
+impl ApiOrder {
+    pub fn to_print_attributes_list(&self) -> Vec<PrintAttributes> {
+        self.files
+            .iter()
+            .map(|f| f.to_print_attributes(&self.id, self.printer_name.clone(), self.footer, self.queue_token_id.clone()))
+            .collect()
+    }
 }
