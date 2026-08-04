@@ -130,28 +130,28 @@ pub async fn print_job(
     let raw_cursor = download_file(attributes.file_id.clone(), &config, &http_client).await?;
     let raw_bytes = raw_cursor.into_inner();
 
-    let bytes_after_footer = match process_pdf_footer(&raw_bytes, &attributes) {
-        Ok(f_bytes) => f_bytes,
-        Err(e) => {
-            log::warn!("Failed to process PDF footer/cover page: {}, using raw file", e);
-            raw_bytes.to_vec()
-        }
-    };
-
-    let final_bytes = if !attributes.page_ranges.trim().is_empty() {
-        match slice_pdf_bytes(&bytes_after_footer, &attributes.page_ranges) {
+    let bytes_after_slice = if !attributes.page_ranges.trim().is_empty() {
+        match slice_pdf_bytes(&raw_bytes, &attributes.page_ranges) {
             Ok(sliced) => {
                 log::info!("Pre-sliced PDF for page ranges '{}'", attributes.page_ranges);
                 attributes.page_ranges = String::new();
                 sliced
             }
             Err(e) => {
-                log::warn!("Failed to pre-slice PDF bytes, sending file with footer: {}", e);
-                bytes_after_footer
+                log::warn!("Failed to pre-slice PDF bytes, sending raw file: {}", e);
+                raw_bytes.to_vec()
             }
         }
     } else {
-        bytes_after_footer
+        raw_bytes.to_vec()
+    };
+
+    let final_bytes = match process_pdf_footer(&bytes_after_slice, &attributes) {
+        Ok(f_bytes) => f_bytes,
+        Err(e) => {
+            log::warn!("Failed to process PDF footer/cover page: {}, using sliced file", e);
+            bytes_after_slice
+        }
     };
 
     let payload = IppPayload::new_async(Cursor::new(final_bytes));
@@ -460,21 +460,55 @@ fn create_type1_font(doc: &mut lopdf::Document) -> lopdf::ObjectId {
 fn ensure_font_on_page(doc: &mut lopdf::Document, page_id: lopdf::ObjectId) {
     let font_obj_id = create_type1_font(doc);
 
+    // 1. Check if Resources is a reference (e.g. /Resources 488 0 R)
     let res_ref = doc.get_dictionary(page_id)
         .ok()
         .and_then(|dict| dict.get(b"Resources").ok())
         .and_then(|obj| obj.as_reference().ok());
 
     if let Some(res_id) = res_ref {
+        // Check if Font inside res_dict is a Reference (e.g. /Font 487 0 R)
+        let font_ref = doc.get_object(res_id)
+            .ok()
+            .and_then(|obj| obj.as_dict().ok())
+            .and_then(|dict| dict.get(b"Font").ok())
+            .and_then(|font_obj| font_obj.as_reference().ok());
+
+        if let Some(font_id) = font_ref {
+            if let Ok(font_dict) = doc.get_object_mut(font_id).and_then(lopdf::Object::as_dict_mut) {
+                if !font_dict.has(b"PrintfFooterFont") {
+                    font_dict.set("PrintfFooterFont", font_obj_id);
+                }
+                return;
+            }
+        }
+
         if let Ok(res_dict) = doc.get_object_mut(res_id).and_then(lopdf::Object::as_dict_mut) {
             if let Ok(font_map) = res_dict.get_mut(b"Font").and_then(lopdf::Object::as_dict_mut) {
-                if !font_map.has(b"F1") {
-                    font_map.set("F1", font_obj_id);
+                if !font_map.has(b"PrintfFooterFont") {
+                    font_map.set("PrintfFooterFont", font_obj_id);
                 }
             } else {
                 let mut font_map = lopdf::Dictionary::new();
-                font_map.set("F1", font_obj_id);
+                font_map.set("PrintfFooterFont", font_obj_id);
                 res_dict.set("Font", font_map);
+            }
+            return;
+        }
+    }
+
+    // 2. Direct inline Resources dictionary on page_dict
+    let font_ref_direct = doc.get_dictionary(page_id)
+        .ok()
+        .and_then(|dict| dict.get(b"Resources").ok())
+        .and_then(|obj| obj.as_dict().ok())
+        .and_then(|dict| dict.get(b"Font").ok())
+        .and_then(|font_obj| font_obj.as_reference().ok());
+
+    if let Some(font_id) = font_ref_direct {
+        if let Ok(font_dict) = doc.get_object_mut(font_id).and_then(lopdf::Object::as_dict_mut) {
+            if !font_dict.has(b"PrintfFooterFont") {
+                font_dict.set("PrintfFooterFont", font_obj_id);
             }
             return;
         }
@@ -483,22 +517,75 @@ fn ensure_font_on_page(doc: &mut lopdf::Document, page_id: lopdf::ObjectId) {
     if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(lopdf::Object::as_dict_mut) {
         if let Ok(res_dict) = page_dict.get_mut(b"Resources").and_then(lopdf::Object::as_dict_mut) {
             if let Ok(font_map) = res_dict.get_mut(b"Font").and_then(lopdf::Object::as_dict_mut) {
-                if !font_map.has(b"F1") {
-                    font_map.set("F1", font_obj_id);
+                if !font_map.has(b"PrintfFooterFont") {
+                    font_map.set("PrintfFooterFont", font_obj_id);
                 }
             } else {
                 let mut font_map = lopdf::Dictionary::new();
-                font_map.set("F1", font_obj_id);
+                font_map.set("PrintfFooterFont", font_obj_id);
                 res_dict.set("Font", font_map);
             }
         } else {
             let mut font_map = lopdf::Dictionary::new();
-            font_map.set("F1", font_obj_id);
+            font_map.set("PrintfFooterFont", font_obj_id);
             let mut res_dict = lopdf::Dictionary::new();
             res_dict.set("Font", font_map);
             page_dict.set("Resources", res_dict);
         }
     }
+}
+
+fn add_footer_to_page(
+    doc: &mut lopdf::Document,
+    page_id: lopdf::ObjectId,
+    token: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ensure_font_on_page(doc, page_id);
+
+    let q_start_id = doc.add_object(lopdf::Object::Stream(lopdf::Stream::new(
+        lopdf::Dictionary::new(),
+        b"q ".to_vec(),
+    )));
+
+    let sanitized = sanitize_pdf_text(token);
+    let char_count = token.chars().count() as f64;
+    let box_width = (char_count * 6.5) + 12.0;
+
+    let footer_str = format!(
+        "q 1 1 1 rg 30.0 24.0 {:.1} 16.0 re f Q q 0 0 0 rg 0 0 0 RG BT /PrintfFooterFont 10 Tf 36 30 Td ({}) Tj ET Q Q",
+        box_width, sanitized
+    );
+
+    let footer_id = doc.add_object(lopdf::Object::Stream(lopdf::Stream::new(
+        lopdf::Dictionary::new(),
+        footer_str.into_bytes(),
+    )));
+
+    if let Ok(page) = doc.get_dictionary(page_id) {
+        let mut new_contents = vec![lopdf::Object::Reference(q_start_id)];
+
+        match page.get(b"Contents") {
+            Ok(lopdf::Object::Reference(id)) => {
+                new_contents.push(lopdf::Object::Reference(*id));
+            }
+            Ok(lopdf::Object::Array(arr)) => {
+                new_contents.extend(arr.clone());
+            }
+            Ok(lopdf::Object::Stream(stream)) => {
+                let stream_id = doc.add_object(lopdf::Object::Stream(stream.clone()));
+                new_contents.push(lopdf::Object::Reference(stream_id));
+            }
+            _ => {}
+        }
+
+        new_contents.push(lopdf::Object::Reference(footer_id));
+
+        if let Ok(page_mut) = doc.get_object_mut(page_id).and_then(lopdf::Object::as_dict_mut) {
+            page_mut.set("Contents", new_contents);
+        }
+    }
+
+    Ok(())
 }
 
 pub fn process_pdf_footer(
@@ -516,12 +603,7 @@ pub fn process_pdf_footer(
     if footer_enabled {
         let pages = doc.get_pages();
         for (_, page_id) in pages {
-            ensure_font_on_page(&mut doc, page_id);
-            let footer_content = format!(
-                "q 0 0 0 rg 0 0 0 RG BT /F1 10 Tf 36 30 Td ({}) Tj ET Q",
-                sanitize_pdf_text(&token)
-            );
-            let _ = doc.add_page_contents(page_id, footer_content.into_bytes());
+            let _ = add_footer_to_page(&mut doc, page_id, &token);
         }
     } else {
         let font_obj_id = create_type1_font(&mut doc);
@@ -541,7 +623,7 @@ pub fn process_pdf_footer(
         let y = (page_height / 2.0) - (font_size * 0.3);
 
         let cover_content = format!(
-            "BT /F1 {:.1} Tf {:.2} {:.2} Td ({}) Tj ET",
+            "BT /PrintfFooterFont {:.1} Tf {:.2} {:.2} Td ({}) Tj ET",
             font_size, x, y, sanitized_token
         ).into_bytes();
 
@@ -551,7 +633,7 @@ pub fn process_pdf_footer(
         )));
 
         let mut font_map = lopdf::Dictionary::new();
-        font_map.set("F1", font_obj_id);
+        font_map.set("PrintfFooterFont", font_obj_id);
         let mut res_dict = lopdf::Dictionary::new();
         res_dict.set("Font", font_map);
 
@@ -571,15 +653,18 @@ pub fn process_pdf_footer(
         let cover_page_id = doc.add_object(cover_page_dict);
         let mut new_page_ids = vec![cover_page_id];
 
-        let is_double_sided = attributes.sides.contains("two-sided");
-        if is_double_sided {
+        let number_up: usize = attributes.number_up.parse().unwrap_or(1).max(1);
+        let sides_multiplier: usize = if attributes.sides.contains("two-sided") { 2 } else { 1 };
+        let total_cover_pages_needed = number_up * sides_multiplier;
+
+        for _ in 1..total_cover_pages_needed {
             let blank_content_obj_id = doc.add_object(lopdf::Object::Stream(lopdf::Stream::new(
                 lopdf::Dictionary::new(),
                 b"BT ET".to_vec(),
             )));
             let mut blank_page_dict = lopdf::Dictionary::new();
             blank_page_dict.set("Type", lopdf::Object::Name(b"Page".to_vec()));
-            blank_page_dict.set("MediaBox", media_box);
+            blank_page_dict.set("MediaBox", media_box.clone());
             blank_page_dict.set("Contents", blank_content_obj_id);
 
             let blank_page_id = doc.add_object(blank_page_dict);
@@ -927,6 +1012,45 @@ pub async fn add_appsocket_printer_via_ipp(
                 Err(format!("CUPS IPP status: {:?}", response.header().status_code()))
             }
         }
-        Err(e) => Err(format!("Failed IPP HTTP request to localhost:631: {}", e)),
+        Err(e) => Err(format!("Failed to send IPP request to CUPS: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_capstone_footer_processing() {
+        if let Ok(bytes) = std::fs::read("Capstone.pdf") {
+            let mut attrs = PrintAttributes {
+                file_id: "capstone".to_string(),
+                orientation: "portrait".to_string(),
+                color: crate::types::ColorMode::Color,
+                copies: "1".to_string(),
+                paper_format: "iso_a4_210x297mm".to_string(),
+                page_ranges: "".to_string(),
+                number_up: "1".to_string(),
+                sides: "one-sided".to_string(),
+                document_format: "application/pdf".to_string(),
+                print_scaling: "auto".to_string(),
+                target_printer: None,
+                order: Some("ord1".to_string()),
+                printed: None,
+                footer: Some(true),
+                queue_token_id: Some("CAPSTONE-TOKEN-123".to_string()),
+            };
+
+            let footer_enabled_res = process_pdf_footer(&bytes, &attrs);
+            assert!(footer_enabled_res.is_ok(), "Footer enabled should succeed");
+
+            attrs.footer = Some(false);
+            let footer_disabled_res = process_pdf_footer(&bytes, &attrs);
+            assert!(footer_disabled_res.is_ok(), "Cover page prepending should succeed");
+
+            let doc_orig = lopdf::Document::load_mem(&bytes).unwrap();
+            let doc_cover = lopdf::Document::load_mem(&footer_disabled_res.unwrap()).unwrap();
+            assert_eq!(doc_cover.get_pages().len(), doc_orig.get_pages().len() + 1);
+        }
     }
 }
