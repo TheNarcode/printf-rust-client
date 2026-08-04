@@ -583,7 +583,7 @@ async fn get_completed_orders(state: Arc<AppState>) -> Result<Vec<ApiOrder>, Str
 
     let filtered: Vec<ApiOrder> = orders
         .into_iter()
-        .filter(|o| o.status.unwrap_or(0) == 1 || o.status.unwrap_or(0) == 3 || o.paid.unwrap_or(false))
+        .filter(|o| o.status.unwrap_or(0) != 3 && (o.status.unwrap_or(0) == 1 || o.paid.unwrap_or(false)))
         .collect();
 
     Ok(filtered)
