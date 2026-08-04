@@ -549,11 +549,11 @@ fn add_footer_to_page(
 
     let sanitized = sanitize_pdf_text(token);
     let char_count = token.chars().count() as f64;
-    let box_width = (char_count * 6.5) + 12.0;
+    let box_height = (char_count * 6.5) + 12.0;
 
     let footer_str = format!(
-        "q 1 1 1 rg 30.0 24.0 {:.1} 16.0 re f Q q 0 0 0 rg 0 0 0 RG BT /PrintfFooterFont 10 Tf 36 30 Td ({}) Tj ET Q Q",
-        box_width, sanitized
+        "q 1 1 1 rg 18.0 30.0 16.0 {:.1} re f Q q 0 0 0 rg 0 0 0 RG BT /PrintfFooterFont 10 Tf 0 1 -1 0 24.0 36.0 Tm ({}) Tj ET Q Q",
+        box_height, sanitized
     );
 
     let footer_id = doc.add_object(lopdf::Object::Stream(lopdf::Stream::new(
