@@ -192,6 +192,15 @@ pub async fn print_job(
             let get_attrs = IppOperationBuilder::get_job_attributes(printer_uri.clone(), job_id).build();
             match ipp_client.send(get_attrs).await {
                 Ok(resp) => {
+                    let status_code = resp.header().status_code();
+                    if status_code == ipp::model::StatusCode::ClientErrorNotFound {
+                        log::info!("Job {} completed and purged from CUPS (status ClientErrorNotFound)", job_id);
+                        if let Err(e) = notify_webhook(&attributes.file_id, &printer_name, &config, &http_client).await {
+                            log::error!("Failed to notify webhook: {}", e);
+                        }
+                        return Ok(());
+                    }
+
                     let mut job_state = None;
                     let mut reasons: Vec<String> = Vec::new();
                     let mut message: Option<String> = None;
@@ -311,10 +320,22 @@ pub async fn print_job(
                             processing_active_seconds = 0;
                         }
                     } else {
-                        log::warn!("Could not retrieve job state for job {}", job_id);
+                        log::info!("Job {} attributes purged by CUPS — treating as completed", job_id);
+                        if let Err(e) = notify_webhook(&attributes.file_id, &printer_name, &config, &http_client).await {
+                            log::error!("Failed to notify webhook: {}", e);
+                        }
+                        return Ok(());
                     }
                 }
                 Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.to_lowercase().contains("not-found") || err_str.contains("404") {
+                        log::info!("Job {} returned not-found on polling — treating as completed and purged by CUPS", job_id);
+                        if let Err(ne) = notify_webhook(&attributes.file_id, &printer_name, &config, &http_client).await {
+                            log::error!("Failed to notify webhook: {}", ne);
+                        }
+                        return Ok(());
+                    }
                     return Err(format!("Error polling job status for job {}: {}", job_id, e).into());
                 }
             }

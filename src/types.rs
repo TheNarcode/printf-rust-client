@@ -250,9 +250,20 @@ pub struct ApiOrder {
 
 impl ApiOrder {
     pub fn to_print_attributes_list(&self) -> Vec<PrintAttributes> {
+        let token = self
+            .queue_token_id
+            .clone()
+            .or_else(|| Some(self.id.clone()));
         self.files
             .iter()
-            .map(|f| f.to_print_attributes(&self.id, self.printer_name.clone(), self.footer, self.queue_token_id.clone()))
+            .map(|f| {
+                f.to_print_attributes(
+                    &self.id,
+                    self.printer_name.clone(),
+                    self.footer,
+                    token.clone(),
+                )
+            })
             .collect()
     }
 }
