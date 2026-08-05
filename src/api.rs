@@ -1,8 +1,5 @@
 use std::sync::Arc;
 
-use futures::io::Cursor;
-use tokio_util::bytes::Bytes;
-
 use crate::constants::BASE_URL;
 use crate::state::AppState;
 use crate::types::ApiOrder;
@@ -20,13 +17,13 @@ fn get_api_base_url(state: &Arc<AppState>) -> &str {
 
 /// Downloads a print file from the configured S3-compatible object store.
 ///
-/// Returns a `Cursor<Bytes>` ready to be streamed into an IPP payload.
-/// The `reqwest::Client` already has a timeout configured at construction time,
-/// so no per-request timeout is needed here.
+/// Returns the raw file bytes as `Vec<u8>`, ready for PDF processing and
+/// subsequent IPP submission. The `reqwest::Client` already has a timeout
+/// configured at construction time, so no per-request timeout is needed here.
 pub async fn download_file(
     file_id: &str,
     state: &Arc<AppState>,
-) -> Result<Cursor<Bytes>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     let url = format!("{}{}", state.config.s3_base_url, file_id);
     log::info!("Downloading file {} from {}", file_id, url);
 
@@ -52,7 +49,7 @@ pub async fn download_file(
         .map_err(|e| format!("Failed to read response body for file {}: {}", file_id, e))?;
 
     log::info!("Downloaded {} bytes for file {}", bytes.len(), file_id);
-    Ok(Cursor::new(bytes))
+    Ok(bytes.to_vec())
 }
 
 // ─── Webhook notification ──────────────────────────────────────────────────────

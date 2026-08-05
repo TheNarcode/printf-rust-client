@@ -69,8 +69,6 @@ pub struct PrintAttributes {
     pub printed: Option<bool>,
     #[serde(default)]
     pub footer: Option<bool>,
-    #[serde(default, alias = "queue_token_id", alias = "queueTokenId")]
-    pub queue_token_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -195,7 +193,6 @@ impl ApiFile {
         order_id: &str,
         printer_name: Option<String>,
         footer: Option<bool>,
-        queue_token_id: Option<String>,
     ) -> PrintAttributes {
         let color_mode = match self.color.as_deref() {
             Some("color") | Some("Color") => ColorMode::Color,
@@ -217,7 +214,6 @@ impl ApiFile {
             order: self.order.clone().or_else(|| Some(order_id.to_string())),
             printed: self.printed,
             footer,
-            queue_token_id,
         }
     }
 }
@@ -240,8 +236,6 @@ pub struct ApiOrder {
     pub printer_name: Option<String>,
     #[serde(default)]
     pub footer: Option<bool>,
-    #[serde(default, alias = "queue_token_id", alias = "queueTokenId")]
-    pub queue_token_id: Option<String>,
     #[serde(default)]
     pub created_at: Option<serde_json::Value>,
     #[serde(default)]
@@ -250,20 +244,9 @@ pub struct ApiOrder {
 
 impl ApiOrder {
     pub fn to_print_attributes_list(&self) -> Vec<PrintAttributes> {
-        let token = self
-            .queue_token_id
-            .clone()
-            .or_else(|| Some(self.id.clone()));
         self.files
             .iter()
-            .map(|f| {
-                f.to_print_attributes(
-                    &self.id,
-                    self.printer_name.clone(),
-                    self.footer,
-                    token.clone(),
-                )
-            })
+            .map(|f| f.to_print_attributes(&self.id, self.printer_name.clone(), self.footer))
             .collect()
     }
 }

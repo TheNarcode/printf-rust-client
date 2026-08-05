@@ -22,14 +22,4 @@ pub fn get_config_path() -> Result<PathBuf, Box<dyn std::error::Error + Send + S
         .map(|base| base.join("printf").join("config.json"))
 }
 
-/// Returns CUPS HTTP Basic Auth credentials as `(username, password)` if both
-/// are configured and non-empty; otherwise `None`.
-///
-/// The caller should not embed credentials in a URI string themselves — this
-/// function is the single authoritative way to obtain CUPS credentials.
-pub fn get_cups_creds(config: &Config) -> Option<(&str, &str)> {
-    match (&config.cups_username, &config.cups_password) {
-        (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => Some((u.as_str(), p.as_str())),
-        _ => None,
-    }
-}
+

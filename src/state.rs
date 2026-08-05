@@ -20,6 +20,11 @@ pub struct AppState {
     pub printer_manager: Arc<Mutex<Option<PrinterManager>>>,
     /// In-memory store of all tracked print jobs keyed by `file_id`.
     pub job_store: Arc<Mutex<HashMap<String, JobInfo>>>,
+    /// Path to the on-disk JSON snapshot of `job_store`.
+    /// The store is atomically written here on every status transition so that
+    /// in-progress jobs survive an app restart and CF Queue re-deliveries cannot
+    /// cause double-prints.
+    pub job_store_path: std::path::PathBuf,
 }
 
 /// Returns the current Unix time in whole seconds.

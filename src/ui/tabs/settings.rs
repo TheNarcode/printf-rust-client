@@ -17,6 +17,7 @@ use crate::types::{ColorMode, Printer, PrinterProperties};
 #[component]
 pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
     let app_state = use_context::<Arc<AppState>>();
+    let mut is_refreshing = use_signal(|| false);
 
     // ── Add-printer modal signals ──────────────────────────────────────────────
     let mut show_add_modal = use_signal(|| false);
@@ -44,9 +45,8 @@ pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
     rsx! {
         div { class: "page-view active",
             section { class: "section-jobs",
-                div { class: "section-header",
-                    h2 { "Printer Settings" }
-                    div { style: "display:flex;gap:0.5rem;align-items:center;",
+                div { class: "section-header", style: "margin-bottom: 1rem;",
+                    div { class: "section-header-left",
                         button {
                             class: "btn btn-primary btn-sm",
                             onclick: move |_| {
@@ -55,20 +55,31 @@ pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
                             },
                             "+ Add New Printer"
                         }
+                    }
+                    div { class: "section-header-right",
                         button {
                             class: "btn btn-primary btn-sm",
+                            disabled: is_refreshing(),
                             onclick: {
                                 let state = app_state.clone();
                                 move |_| {
+                                    is_refreshing.set(true);
                                     let state = state.clone();
                                     spawn(async move {
                                         if let Ok(list) = get_printer_list(state).await {
                                             printers.set(list);
                                         }
+                                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                                        is_refreshing.set(false);
                                     });
                                 }
                             },
-                            "Refresh"
+                            if is_refreshing() {
+                                span { class: "btn-spin-icon", "↻" }
+                                span { "Refreshing..." }
+                            } else {
+                                span { "Refresh" }
+                            }
                         }
                     }
                 }
@@ -82,21 +93,15 @@ pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
                                 {
                                     let is_paused   = p.paused;
                                     let uri         = p.uri.clone();
-                                    let color_label = if p.color_mode == ColorMode::Color { "Color" } else { "Monochrome" };
                                     let state_tog   = app_state.clone();
                                     let printer_obj = p.clone();
 
                                     rsx! {
                                         div { class: "printer-card", key: "{uri}",
                                             div { class: "printer-card-info",
-                                                div { class: "printer-card-meta",
+                                                div { style: "display:flex;align-items:center;gap:0.5rem;",
+                                                    span { class: if is_paused { "job-status-dot dot-stuck" } else { "job-status-dot dot-completed" } }
                                                     div { class: "printer-card-name", "{p.name}" }
-                                                    span { class: "pill", "{color_label}" }
-                                                    if is_paused {
-                                                        span { class: "pill", style: "background:#fff3cd;border-color:#ffc107;color:#856404", "Paused" }
-                                                    } else {
-                                                        span { class: "pill", style: "background:#d1fae5;border-color:#6ee7b7;color:#065f46", "Active" }
-                                                    }
                                                 }
                                             }
                                             div { style: "display:flex;gap:0.5rem;align-items:center;",
@@ -426,8 +431,8 @@ pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
                                 value: edit_sides(),
                                 onchange: move |e: Event<FormData>| edit_sides.set(e.value()),
                                 option { value: "one-sided",            "Single-Sided (Simplex)" }
-                                option { value: "two-sided-long-edge",  "Two-Sided (Long Edge)" }
-                                option { value: "two-sided-short-edge", "Two-Sided (Short Edge)" }
+                                option { value: "two-sided-long-edge",  "Double-Sided (Long Edge)" }
+                                option { value: "two-sided-short-edge", "Double-Sided (Short Edge)" }
                             }
                         }
                         div { class: "form-group",

@@ -243,8 +243,12 @@ fn add_footer_to_page(
                 new_contents.extend(arr.clone());
             }
             Ok(lopdf::Object::Stream(stream)) => {
+                // Move inline stream into an indirect object so it can be referenced
+                // alongside the new overlay streams without duplicating content.
                 let sid = doc.add_object(lopdf::Object::Stream(stream.clone()));
                 new_contents.push(lopdf::Object::Reference(sid));
+                // Remove the inline stream from the page dict — it will be replaced
+                // below with the consolidated Contents array.
             }
             _ => {}
         }
@@ -272,18 +276,12 @@ fn add_footer_to_page(
 ///   pages are added as needed so that the first page of the actual document
 ///   lands on the correct face for duplex/N-up printing.
 ///
-/// If no `queue_token_id` is present the PDF is returned unchanged.
+/// If the `order` field is absent or empty the PDF is returned unchanged.
 pub fn process_pdf_footer(
     pdf_bytes: &[u8],
     attributes: &PrintAttributes,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let token = attributes
-        .queue_token_id
-        .as_deref()
-        .or_else(|| attributes.order.as_deref())
-        .unwrap_or("")
-        .trim();
-
+    let token = attributes.order.as_deref().unwrap_or("").trim();
     if token.is_empty() {
         return Ok(pdf_bytes.to_vec());
     }
@@ -402,17 +400,17 @@ mod tests {
             document_format: "application/pdf".to_string(),
             print_scaling: "auto".to_string(),
             target_printer: None,
-            order: Some("ord1".to_string()),
+            order: token.map(|s| s.to_string()).or_else(|| Some("ord1".to_string())),
             printed: None,
             footer,
-            queue_token_id: token.map(|s| s.to_string()),
         }
     }
 
     #[test]
     fn no_token_returns_original() {
         let bytes = b"%PDF-1.4 test";
-        let attrs = make_attrs(Some(true), None);
+        let mut attrs = make_attrs(Some(true), None);
+        attrs.order = None;
         // Should return original since there's no token
         let result = process_pdf_footer(bytes, &attrs).unwrap();
         assert_eq!(result, bytes);

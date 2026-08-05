@@ -8,19 +8,24 @@ use dioxus::prelude::*;
 
 use crate::api::{get_completed_orders, get_stats};
 use crate::printer::client::get_printer_list;
-use crate::queue::dispatch::{get_jobs, start_client, stop_client};
+use crate::queue::dispatch::{get_completed_jobs_today, get_jobs, start_client, stop_client};
 use crate::state::{AppState, current_timestamp_secs};
 use crate::types::{ApiOrder, JobInfo, Printer};
 use crate::ui::tabs::{
-    completed::CompletedTab, jobs::JobsTab, settings::SettingsTab, stats::StatsTab,
+    completed::CompletedTab,
+    jobs::JobsTab,
+    pickup::PickupTab,
+    settings::SettingsTab,
+    stats::StatsTab,
 };
 
-/// The four top-level navigation tabs.
+/// The five top-level navigation tabs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Tab {
     Jobs,
     Stats,
     Completed,
+    Pickup,
     Settings,
 }
 
@@ -36,12 +41,13 @@ pub fn App() -> Element {
     let mut active_tab       = use_signal(|| Tab::Jobs);
     let mut jobs             = use_signal(Vec::<JobInfo>::new);
     let mut printers         = use_signal(Vec::<Printer>::new);
-    let mut completed_orders = use_signal(Vec::<ApiOrder>::new);
+    let mut completed_orders = use_signal(Vec::<ApiOrder>::new);  // Pickup tab (API)
+    let mut completed_jobs   = use_signal(Vec::<JobInfo>::new);   // Completed tab (local store)
     let completed_search     = use_signal(String::new);
     let selected_month       = use_signal(|| "current".to_string());
     let mut stats_json       = use_signal(|| serde_json::Value::Null);
     let mut now_secs         = use_signal(current_timestamp_secs);
-    let selected_requeue_printers = use_signal(HashMap::<String, String>::new);
+    let mut selected_requeue_printers = use_signal(HashMap::<String, String>::new);
 
     // ── Initial printer fetch ──────────────────────────────────────────────────
     let state_init = app_state.clone();
@@ -67,6 +73,19 @@ pub fn App() -> Element {
                     is_running.set(running);
                 }
                 let current_jobs = get_jobs(state.clone()).await;
+                // Prune stale printer selections for jobs no longer tracked
+                {
+                    let live_ids: std::collections::HashSet<String> =
+                        current_jobs.iter().map(|j| j.file_id.clone()).collect();
+                    let current_map = selected_requeue_printers();
+                    if current_map.keys().any(|k| !live_ids.contains(k)) {
+                        let pruned: HashMap<String, String> = current_map
+                            .into_iter()
+                            .filter(|(k, _)| live_ids.contains(k))
+                            .collect();
+                        selected_requeue_printers.set(pruned);
+                    }
+                }
                 jobs.set(current_jobs);
             }
         }
@@ -87,6 +106,10 @@ pub fn App() -> Element {
                     }
                 }
                 Tab::Completed => {
+                    let jobs = get_completed_jobs_today(state).await;
+                    completed_jobs.set(jobs);
+                }
+                Tab::Pickup => {
                     if let Ok(orders) = get_completed_orders(state).await {
                         completed_orders.set(orders);
                     }
@@ -109,10 +132,11 @@ pub fn App() -> Element {
     let state_toggle       = app_state.clone();
 
     let tab_title = match active_tab() {
-        Tab::Jobs => "Active Print Jobs",
-        Tab::Stats => "Print Statistics & Revenue",
-        Tab::Completed => "Completed Orders",
-        Tab::Settings => "Printer Settings",
+        Tab::Jobs      => "Active Print Jobs",
+        Tab::Stats     => "Print Statistics & Revenue",
+        Tab::Completed => "Completed Today",
+        Tab::Pickup    => "Ready for Pickup",
+        Tab::Settings  => "Printer Settings",
     };
 
     rsx! {
@@ -123,7 +147,6 @@ pub fn App() -> Element {
             // LEFT SIDEBAR NAVIGATION
             // ══════════════════════════════════════════════════════════════════
             aside { class: "app-sidebar",
-                // Sidebar Nav Links
                 div { class: "sidebar-nav-container",
                     div { class: "sidebar-nav-title", "Menu" }
 
@@ -166,7 +189,7 @@ pub fn App() -> Element {
                         }
                     }
 
-                    // 3. Completed Tab
+                    // 3. Completed Tab (local job store — today's printed jobs)
                     button {
                         class: if active_tab() == Tab::Completed { "sidebar-nav-item active" } else { "sidebar-nav-item" },
                         onclick: move |_| active_tab.set(Tab::Completed),
@@ -182,7 +205,24 @@ pub fn App() -> Element {
                         }
                     }
 
-                    // 4. Settings Tab
+                    // 4. Pickup Tab (API — ready-for-customer-pickup orders)
+                    button {
+                        class: if active_tab() == Tab::Pickup { "sidebar-nav-item active" } else { "sidebar-nav-item" },
+                        onclick: move |_| active_tab.set(Tab::Pickup),
+                        div { class: "sidebar-nav-item-left",
+                            svg {
+                                width: "16", height: "16", view_box: "0 0 24 24",
+                                fill: "none", stroke: "currentColor",
+                                stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
+                                path { d: "M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" }
+                                line { x1: "3", y1: "6", x2: "21", y2: "6" }
+                                path { d: "M16 10a4 4 0 0 1-8 0" }
+                            }
+                            span { "Pickup" }
+                        }
+                    }
+
+                    // 5. Settings Tab
                     button {
                         class: if active_tab() == Tab::Settings { "sidebar-nav-item active" } else { "sidebar-nav-item" },
                         onclick: move |_| active_tab.set(Tab::Settings),
@@ -261,6 +301,11 @@ pub fn App() -> Element {
                         },
                         Tab::Completed => rsx! {
                             CompletedTab {
+                                completed_jobs: completed_jobs,
+                            }
+                        },
+                        Tab::Pickup => rsx! {
+                            PickupTab {
                                 completed_orders: completed_orders,
                                 completed_search: completed_search,
                             }

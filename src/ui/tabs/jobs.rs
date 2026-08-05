@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use dioxus::prelude::*;
 
-use crate::queue::dispatch::{requeue_to_printer, reprint_job};
+use crate::queue::dispatch::{get_jobs, requeue_to_printer};
 use crate::state::AppState;
 use crate::types::{ColorMode, JobInfo, Printer};
 
@@ -27,9 +27,10 @@ pub fn JobsTab(
     rsx! {
         div { class: "page-view active",
             section { class: "section-jobs",
-                div { class: "section-header",
-                    h2 { "Active Print Jobs" }
-                    span { class: "badge-count", "{count_text}" }
+                if !jobs().is_empty() {
+                    div { class: "section-header", style: "justify-content: flex-end; margin-bottom: 0.75rem;",
+                        span { class: "badge-count", "{count_text}" }
+                    }
                 }
                 div { class: "jobs-list-container",
                     div { class: "jobs-list",
@@ -65,10 +66,35 @@ pub fn JobsTab(
                                     let num_up    = a.number_up.parse::<i32>().unwrap_or(1);
 
                                     let state_rq = app_state.clone();
-                                    let state_rp = app_state.clone();
                                     let fid_rq   = file_id.clone();
-                                    let fid_rp   = file_id.clone();
                                     let fid_sel  = file_id.clone();
+
+                                    let sides_str = match a.sides.as_str() {
+                                        "one-sided" => "Single-Sided",
+                                        "two-sided-long-edge" | "two-sided-short-edge" | "two-sided" => "Double-Sided",
+                                        other if other.contains("two-sided") => "Double-Sided",
+                                        other if other.contains("one-sided") => "Single-Sided",
+                                        other => other,
+                                    };
+
+                                    let page_range_str = if !a.page_ranges.is_empty() && a.page_ranges != "all" && a.page_ranges != "all pages" && a.page_ranges != "1-end" {
+                                        format!("Pages {}", a.page_ranges)
+                                    } else {
+                                        String::new()
+                                    };
+
+                                    let orientation_str = match a.orientation.to_lowercase().as_str() {
+                                        "portrait" => "Portrait",
+                                        "landscape" => "Landscape",
+                                        _ => "",
+                                    };
+
+                                    let lower_scaling = a.print_scaling.to_lowercase();
+                                    let scaling_str = match lower_scaling.as_str() {
+                                        "auto" | "none" | "" => "",
+                                        "fit" => "Fit to Page",
+                                        _ => "",
+                                    };
 
                                     rsx! {
                                         div { class: "job-row-new", key: "{file_id}",
@@ -106,13 +132,16 @@ pub fn JobsTab(
                                                                         let state = state_rq.clone();
                                                                         let fid   = fid_rq.clone();
                                                                         let target_val = curr.clone();
+                                                                        let mut jobs_sig   = jobs;
                                                                         move |_| {
                                                                             let state  = state.clone();
                                                                             let fid    = fid.clone();
                                                                             let target = target_val.clone();
                                                                             spawn(async move {
                                                                                 if !target.is_empty() {
-                                                                                    let _ = requeue_to_printer(fid, target, state).await;
+                                                                                    let _ = requeue_to_printer(fid, target, Arc::clone(&state)).await;
+                                                                                    let updated = get_jobs(Arc::clone(&state)).await;
+                                                                                    jobs_sig.set(updated);
                                                                                 }
                                                                             });
                                                                         }
@@ -122,33 +151,18 @@ pub fn JobsTab(
                                                             }
                                                         }
                                                     }
-                                                    button {
-                                                        class: "btn-reprint reprint-btn",
-                                                        onclick: {
-                                                            let state = state_rp.clone();
-                                                            let fid   = fid_rp.clone();
-                                                            move |_| {
-                                                                let state = state.clone();
-                                                                let fid   = fid.clone();
-                                                                spawn(async move {
-                                                                    let _ = reprint_job(fid, state).await;
-                                                                });
-                                                            }
-                                                        },
-                                                        "Reprint"
-                                                    }
                                                 }
                                             }
 
                                             div { class: "job-pills",
                                                 span { class: "pill", "{color_str}" }
-                                                if !a.sides.is_empty() { span { class: "pill", "{a.sides}" } }
+                                                if !sides_str.is_empty() { span { class: "pill", "{sides_str}" } }
                                                 if copies_num > 1     { span { class: "pill", "×{copies_num}" } }
-                                                if num_up > 1         { span { class: "pill", "{num_up}-up" } }
+                                                if num_up > 1         { span { class: "pill", "{num_up}-Up" } }
                                                 if !a.paper_format.is_empty()   { span { class: "pill", "{a.paper_format}" } }
-                                                if !a.page_ranges.is_empty()    { span { class: "pill", "pp {a.page_ranges}" } }
-                                                if !a.orientation.is_empty()    { span { class: "pill", "{a.orientation}" } }
-                                                if !a.print_scaling.is_empty()  { span { class: "pill", "{a.print_scaling}" } }
+                                                if !page_range_str.is_empty()   { span { class: "pill", "{page_range_str}" } }
+                                                if !orientation_str.is_empty()  { span { class: "pill", "{orientation_str}" } }
+                                                if !scaling_str.is_empty()      { span { class: "pill", "{scaling_str}" } }
                                                 if let Some(ref t) = a.target_printer { span { class: "pill", "{t}" } }
                                             }
 
@@ -158,7 +172,11 @@ pub fn JobsTab(
                                                     let display_elapsed = elapsed.min(lim);
                                                     rsx! {
                                                         div { class: "job-timer-spinner-wrap",
-                                                            div { class: "spinner-sm" }
+                                                            if is_stuck {
+                                                                span { style: "font-size:1.1rem;line-height:1", "⚠️" }
+                                                            } else {
+                                                                div { class: "spinner-sm" }
+                                                            }
                                                             span { class: "job-timer-label", "{display_elapsed}s / {lim}s" }
                                                         }
                                                     }

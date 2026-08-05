@@ -6,7 +6,6 @@ pub struct PrinterManager {
     printers: Vec<Printer>,
     color_counter: usize,
     monochrome_counter: usize,
-    order_counter: usize,
 }
 
 impl PrinterManager {
@@ -15,7 +14,6 @@ impl PrinterManager {
             printers,
             color_counter: 0,
             monochrome_counter: 0,
-            order_counter: 0,
         }
     }
 
@@ -64,7 +62,6 @@ impl PrinterManager {
         has_color: bool,
         has_mono: bool,
     ) -> (Option<Printer>, Option<Printer>, Option<String>, Option<String>) {
-        self.order_counter += 1;
 
         let color_printer = if has_color {
             let available: Vec<_> = self

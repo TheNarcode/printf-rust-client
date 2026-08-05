@@ -3,125 +3,154 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use tokio::sync::Mutex;
-
-use crate::config::get_cups_creds;
+use crate::printer::client::get_cups_creds;
 use crate::printer::manager::PrinterManager;
 use crate::queue::messages::{ack_cf_queue_messages, parse_message_body, pull_cf_queue_messages};
 use crate::state::{AppState, current_timestamp};
-use crate::types::{CfLeaseId, Config, JobInfo, PrintAttributes};
+use crate::types::{CfLeaseId, ColorMode, JobInfo, PrintAttributes};
 
-// ─── Job status helpers ────────────────────────────────────────────────────────
+// ─── Job store persistence ────────────────────────────────────────────────────
 
-/// Updates (or inserts) a job's status in the shared job store.
-///
-/// Preserves any existing `lease_id` and `ipp_job_id` already recorded for the job.
+/// Atomically persists the job store to disk as JSON.
+/// Write-to-temp-then-rename prevents file corruption on crash or power loss.
+pub async fn persist_job_store(store: &HashMap<String, JobInfo>, path: &std::path::Path) {
+    let json = match serde_json::to_string(store) {
+        Ok(j) => j,
+        Err(e) => { log::error!("Failed to serialize job store: {}", e); return; }
+    };
+    let tmp = path.with_extension("tmp");
+    if let Err(e) = tokio::fs::write(&tmp, json.as_bytes()).await {
+        log::error!("Failed to write job store to {}: {}", tmp.display(), e);
+        return;
+    }
+    if let Err(e) = tokio::fs::rename(&tmp, path).await {
+        log::error!("Failed to atomically commit job store: {}", e);
+    }
+}
+
+/// Loads the job store from disk. Returns an empty HashMap on any error.
+pub fn load_job_store(path: &std::path::Path) -> HashMap<String, JobInfo> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => match serde_json::from_str(&content) {
+            Ok(store) => { let s: HashMap<String, JobInfo> = store; log::info!("Loaded {} job(s) from disk", s.len()); s }
+            Err(e) => { log::warn!("Failed to parse job store ({}); starting fresh", e); HashMap::new() }
+        },
+        Err(_) => HashMap::new(),
+    }
+}
+
+// ─── Job status helpers ───────────────────────────────────────────────────────
+
+/// Updates or inserts a job status in the shared store, then persists atomically.
+/// Preserves any existing `lease_id` and `ipp_job_id`.
+/// Persists directly from the locked snapshot to avoid an extra full-map clone.
 pub async fn update_job_status(
-    job_store: &Arc<Mutex<HashMap<String, JobInfo>>>,
+    state: &Arc<AppState>,
     attributes: &PrintAttributes,
     order_id: Option<String>,
     status: &str,
 ) {
-    let mut store = job_store.lock().await;
-    let (existing_lease, existing_ipp_job_id) = store
-        .get(&attributes.file_id)
-        .map(|i| (i.lease_id.clone(), i.ipp_job_id))
-        .unwrap_or((None, None));
-
-    store.insert(
-        attributes.file_id.clone(),
-        JobInfo {
+    let path = state.job_store_path.clone();
+    let snapshot = {
+        let mut store = state.job_store.lock().await;
+        let (lease, ipp_id) = store.get(&attributes.file_id)
+            .map(|i| (i.lease_id.clone(), i.ipp_job_id))
+            .unwrap_or((None, None));
+        store.insert(attributes.file_id.clone(), JobInfo {
             file_id: attributes.file_id.clone(),
             order_id,
             attributes: attributes.clone(),
             status: status.to_string(),
             updated_at: current_timestamp(),
-            lease_id: existing_lease,
-            ipp_job_id: existing_ipp_job_id,
-        },
-    );
-
-    log::info!("Job {} → {}", attributes.file_id, status);
+            lease_id: lease,
+            ipp_job_id: ipp_id,
+        });
+        log::info!("Job {} → {}", attributes.file_id, status);
+        store.clone()
+    };
+    persist_job_store(&snapshot, &path).await;
 }
 
-/// Like `update_job_status` but also sets (or updates) the CF Queue lease ID.
+/// Like `update_job_status` but also records or updates the CF Queue lease ID.
 pub async fn update_job_status_with_lease(
-    job_store: &Arc<Mutex<HashMap<String, JobInfo>>>,
+    state: &Arc<AppState>,
     attributes: &PrintAttributes,
     order_id: Option<String>,
     status: &str,
     lease_id: Option<String>,
 ) {
-    let mut store = job_store.lock().await;
-    let (existing_lease, existing_ipp_job_id) = store
-        .get(&attributes.file_id)
-        .map(|i| (i.lease_id.clone(), i.ipp_job_id))
-        .unwrap_or((None, None));
-
-    store.insert(
-        attributes.file_id.clone(),
-        JobInfo {
+    let path = state.job_store_path.clone();
+    let snapshot = {
+        let mut store = state.job_store.lock().await;
+        let (existing_lease, ipp_id) = store.get(&attributes.file_id)
+            .map(|i| (i.lease_id.clone(), i.ipp_job_id))
+            .unwrap_or((None, None));
+        store.insert(attributes.file_id.clone(), JobInfo {
             file_id: attributes.file_id.clone(),
             order_id,
             attributes: attributes.clone(),
             status: status.to_string(),
             updated_at: current_timestamp(),
             lease_id: lease_id.or(existing_lease),
-            ipp_job_id: existing_ipp_job_id,
-        },
-    );
-
-    log::info!("Job {} → {} (lease updated)", attributes.file_id, status);
+            ipp_job_id: ipp_id,
+        });
+        log::info!("Job {} → {} (lease updated)", attributes.file_id, status);
+        store.clone()
+    };
+    persist_job_store(&snapshot, &path).await;
 }
 
-// ─── Job dispatch ──────────────────────────────────────────────────────────────
+// ─── Job dispatch ─────────────────────────────────────────────────────────────
 
-/// Dispatches a batch of `PrintAttributes` to the appropriate printers.
+/// Dispatches a batch of PrintAttributes to the appropriate printers.
 ///
-/// Returns `true` if every job in the batch completed successfully, `false` if any failed.
-/// This result is used to decide whether to ACK or retry the originating CF Queue message.
+/// Files within a batch are dispatched **concurrently**: color and monochrome
+/// files start printing simultaneously rather than sequentially. Returns `true`
+/// if every job in the batch succeeded.
 pub async fn dispatch_job_batch(
     attributes_list: Vec<PrintAttributes>,
-    pm: Arc<Mutex<Option<PrinterManager>>>,
-    config: Arc<Config>,
-    http_client: Arc<reqwest::Client>,
-    job_store: Arc<Mutex<HashMap<String, JobInfo>>>,
+    state: Arc<AppState>,
 ) -> bool {
-    let has_color = attributes_list
-        .iter()
-        .any(|a| a.color == crate::types::ColorMode::Color);
-    let has_mono = attributes_list
-        .iter()
-        .any(|a| a.color == crate::types::ColorMode::Monochrome);
+    let has_color = attributes_list.iter().any(|a| a.color == ColorMode::Color);
+    let has_mono  = attributes_list.iter().any(|a| a.color == ColorMode::Monochrome);
 
-    // Select printers and resolve their configured media sources in one lock acquisition
-    let (color_printer, mono_printer, color_media_source, mono_media_source) = {
-        let mut pm_guard = pm.lock().await;
-        match pm_guard.as_mut() {
-            Some(pm_ref) => pm_ref.get_printers_for_order(has_color, has_mono),
+    // Only consult the round-robin manager if at least one job needs auto-selection.
+    // Named-target jobs bypass round-robin entirely, so we must not bump the counters
+    // for batches that are fully pinned to a specific printer.
+    let needs_auto_select = attributes_list.iter().any(|a| a.target_printer.is_none());
+    let (color_printer, mono_printer, color_media, mono_media) = if needs_auto_select {
+        let mut pm = state.printer_manager.lock().await;
+        match pm.as_mut() {
+            Some(m) => m.get_printers_for_order(has_color, has_mono),
             None => (None, None, None, None),
         }
+    } else {
+        (None, None, None, None)
     };
 
     let order_id: Option<String> = attributes_list.first().and_then(|a| a.order.clone());
-    let mut all_succeeded = true;
+
+    struct Task {
+        attributes: PrintAttributes,
+        printer_name: String,
+        printer_uri: ipp::prelude::Uri,
+        media_source: Option<String>,
+        order_id: Option<String>,
+    }
+
+    let mut tasks: Vec<Task> = Vec::new();
+    let mut all_ok = true;
 
     for mut attributes in attributes_list {
-        let is_color = attributes.color == crate::types::ColorMode::Color;
+        let is_color = attributes.color == ColorMode::Color;
 
-        // Resolve which printer to use for this job
         let printer = if let Some(ref target) = attributes.target_printer.clone() {
-            // A specific printer was requested (requeue/reprint path)
-            let pm_lock = pm.lock().await;
-            match pm_lock
-                .as_ref()
-                .and_then(|pm| {
-                    pm.get_printers()
-                        .into_iter()
-                        .find(|p| p.name == *target || p.uri == *target)
-                })
-            {
-                Some(found) => found,
+            // Named target: resolve from manager or synthesise a minimal Printer
+            let pm_lock = state.printer_manager.lock().await;
+            match pm_lock.as_ref().and_then(|m| {
+                m.get_printers().into_iter().find(|p| &p.name == target || &p.uri == target)
+            }) {
+                Some(p) => p,
                 None => crate::types::Printer {
                     uri: if target.starts_with("http") || target.starts_with("ipp") {
                         target.clone()
@@ -135,101 +164,75 @@ pub async fn dispatch_job_batch(
                 },
             }
         } else {
-            // Normal path — pick from the round-robin selection
-            match attributes.color {
-                crate::types::ColorMode::Color => match &color_printer {
-                    Some(p) => p.clone(),
-                    None => {
-                        log::error!(
-                            "No active color printer available for job {}",
-                            attributes.file_id
-                        );
-                        update_job_status(&job_store, &attributes, order_id.clone(), "Failed")
-                            .await;
-                        all_succeeded = false;
-                        continue;
-                    }
-                },
-                crate::types::ColorMode::Monochrome => match &mono_printer {
-                    Some(p) => p.clone(),
-                    None => {
-                        log::error!(
-                            "No active monochrome printer available for job {}",
-                            attributes.file_id
-                        );
-                        update_job_status(&job_store, &attributes, order_id.clone(), "Failed")
-                            .await;
-                        all_succeeded = false;
-                        continue;
-                    }
-                },
+            // Auto-select via round-robin
+            let chosen = if is_color { color_printer.clone() } else { mono_printer.clone() };
+            match chosen {
+                Some(p) => p,
+                None => {
+                    let mode = if is_color { "color" } else { "monochrome" };
+                    log::error!("No active {} printer for job {}", mode, attributes.file_id);
+                    update_job_status(&state, &attributes, order_id.clone(), "Failed").await;
+                    all_ok = false;
+                    continue;
+                }
             }
         };
 
-        let media_source = if is_color {
-            color_media_source.clone()
-        } else {
-            mono_media_source.clone()
-        };
-
+        let media_source = if is_color { color_media.clone() } else { mono_media.clone() };
         attributes.target_printer = Some(printer.name.clone());
-        update_job_status(&job_store, &attributes, order_id.clone(), "Processing").await;
-        log::info!(
-            "Dispatching job {} → printer {} ({})",
-            attributes.file_id, printer.name, printer.uri
-        );
 
-        let result = match printer.uri.parse() {
-            Ok(uri) => {
-                crate::printer::client::print_job(
-                    uri,
-                    printer.name.clone(),
-                    attributes.clone(),
-                    media_source,
-                    Arc::clone(&config),
-                    Arc::clone(&http_client),
-                    Arc::clone(&job_store),
-                )
-                .await
+        let uri = match printer.uri.parse::<ipp::prelude::Uri>() {
+            Ok(u) => u,
+            Err(e) => {
+                log::error!("Invalid printer URI '{}': {}", printer.uri, e);
+                update_job_status(&state, &attributes, order_id.clone(), "Failed").await;
+                all_ok = false;
+                continue;
             }
-            Err(e) => Err(format!(
-                "Invalid printer URI '{}': {}",
-                printer.uri, e
-            )
-            .into()),
         };
 
-        match result {
-            Ok(()) => {
-                log::info!("Job {} completed successfully", attributes.file_id);
-                update_job_status(&job_store, &attributes, order_id.clone(), "Completed").await;
+        update_job_status(&state, &attributes, order_id.clone(), "Processing").await;
+        log::info!("Dispatching job {} → {} ({})", attributes.file_id, printer.name, printer.uri);
+
+        tasks.push(Task { attributes, printer_name: printer.name, printer_uri: uri, media_source, order_id: order_id.clone() });
+    }
+
+    // Spawn all print tasks concurrently
+    let handles: Vec<_> = tasks.into_iter().map(|task| {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let result = crate::printer::client::print_job(
+                task.printer_uri, task.printer_name, task.attributes.clone(), task.media_source, Arc::clone(&state),
+            ).await;
+            (task.attributes, task.order_id, result)
+        })
+    }).collect();
+
+    for join_result in futures::future::join_all(handles).await {
+        match join_result {
+            Ok((attrs, oid, Ok(()))) => {
+                log::info!("Job {} completed successfully", attrs.file_id);
+                update_job_status(&state, &attrs, oid, "Completed").await;
+            }
+            Ok((attrs, oid, Err(e))) => {
+                all_ok = false;
+                let msg = e.to_string();
+                log::error!("Job {} failed: {}", attrs.file_id, msg);
+                let s = if msg.contains("PendingTimeout") { "Stuck" } else { "Failed" };
+                update_job_status(&state, &attrs, oid, s).await;
             }
             Err(e) => {
-                all_succeeded = false;
-                let err_str = e.to_string();
-                log::error!("Job {} failed: {}", attributes.file_id, err_str);
-                let new_status = if err_str.contains("PendingTimeout") {
-                    "Stuck"
-                } else {
-                    "Failed"
-                };
-                update_job_status(&job_store, &attributes, order_id.clone(), new_status).await;
+                all_ok = false;
+                log::error!("Print task panicked: {}", e);
             }
         }
     }
 
-    all_succeeded
+    all_ok
 }
 
-// ─── Client lifecycle ──────────────────────────────────────────────────────────
+// ─── Client lifecycle ─────────────────────────────────────────────────────────
 
-/// Starts the Cloudflare Queue polling loop in a background `tokio` task.
-///
-/// On start:
-/// 1. Initialises (or re-initialises) the printer manager via IPP, preserving paused state.
-/// 2. Enters a `tokio::select!` loop polling the queue every 2 seconds.
-/// 3. Applies exponential backoff (doubling up to 60 s) on repeated API errors.
-/// 4. Exits cleanly when the cancel channel fires or `is_running` is set to `false`.
 pub async fn start_client(state: Arc<AppState>) -> Result<String, String> {
     if state.is_running.load(Ordering::SeqCst) {
         return Ok("Client is already running".to_string());
@@ -238,140 +241,95 @@ pub async fn start_client(state: Arc<AppState>) -> Result<String, String> {
     let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
     *state.cancel_tx.lock().await = Some(tx);
     state.is_running.store(true, Ordering::SeqCst);
-
-    let config = Arc::clone(&state.config);
-    let http_client = Arc::clone(&state.http_client);
-    let is_running_flag = Arc::clone(&state.is_running);
-    let job_store = Arc::clone(&state.job_store);
-    let pm = Arc::clone(&state.printer_manager);
-    let state_init = Arc::clone(&state);
-
-    log::info!("Starting printf background client loop");
+    log::info!("Starting printf background client");
 
     tokio::spawn(async move {
-        // ── Printer manager initialisation ──────────────────────────────────
-        let creds = get_cups_creds(&state_init.config);
+        // Initialise printer manager
+        let creds = get_cups_creds(&state.config);
         match crate::printer::client::get_ipp_printers(creds).await {
             Ok(printers) => {
-                let mut pm_lock = pm.lock().await;
+                let mut pm_lock = state.printer_manager.lock().await;
                 if pm_lock.is_none() {
                     *pm_lock = Some(PrinterManager::new(printers));
                 } else {
-                    // Re-initialise but preserve paused state across restarts
                     let existing = pm_lock.take().unwrap();
-                    let paused_uris: Vec<String> = existing
-                        .get_printers()
-                        .iter()
-                        .filter(|p| p.paused)
-                        .map(|p| p.uri.clone())
-                        .collect();
+                    let paused: Vec<_> = existing.get_printers().iter().filter(|p| p.paused).map(|p| p.uri.clone()).collect();
                     let mut new_pm = PrinterManager::new(printers);
-                    for uri in &paused_uris {
-                        new_pm.set_printer_paused(uri, true);
-                    }
+                    for uri in &paused { new_pm.set_printer_paused(uri, true); }
                     *pm_lock = Some(new_pm);
                 }
                 log::info!("Printer manager initialised");
             }
             Err(e) => {
-                log::warn!(
-                    "Failed to enumerate IPP printers: {} — starting with empty printer manager",
-                    e
-                );
-                let mut pm_lock = pm.lock().await;
-                if pm_lock.is_none() {
-                    *pm_lock = Some(PrinterManager::new(Vec::new()));
-                }
+                log::warn!("Failed to enumerate printers: {} — starting with empty manager", e);
+                let mut pm_lock = state.printer_manager.lock().await;
+                if pm_lock.is_none() { *pm_lock = Some(PrinterManager::new(Vec::new())); }
             }
         }
 
-        let cf_account_id = config.cf_account_id.clone();
-        let cf_queue_id = config.cf_queue_id.clone();
-        let cf_token = config
-            .cf_api_token
-            .clone()
-            .or_else(|| config.printf_key.clone());
-
+        // CF Queue config (cloned once, used throughout the loop)
+        let cf_account_id = state.config.cf_account_id.clone();
+        let cf_queue_id   = state.config.cf_queue_id.clone();
+        let cf_token = state.config.cf_api_token.clone().or_else(|| state.config.printf_key.clone());
+        let is_running = Arc::clone(&state.is_running);
         let mut backoff = Duration::from_secs(2);
 
-        // ── Poll loop ────────────────────────────────────────────────────────
         loop {
-            if !is_running_flag.load(Ordering::SeqCst) {
-                log::info!("Stop flag set — exiting poll loop");
-                break;
-            }
+            if !is_running.load(Ordering::SeqCst) { break; }
 
             if cf_account_id.is_none() || cf_queue_id.is_none() || cf_token.is_none() {
-                log::warn!(
-                    "CF Queue configuration incomplete (cf_account_id / cf_queue_id / token) — \
-                     waiting 5 s before retry"
-                );
+                log::warn!("CF Queue config incomplete — waiting 5s");
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(5)) => {}
-                    _ = &mut rx => {
-                        is_running_flag.store(false, Ordering::SeqCst);
-                        break;
-                    }
+                    _ = &mut rx => { is_running.store(false, Ordering::SeqCst); break; }
                 }
                 continue;
             }
 
-            let account_id = cf_account_id.as_ref().unwrap();
-            let queue_id = cf_queue_id.as_ref().unwrap();
-            let token = cf_token.as_ref().unwrap();
+            let account_id = cf_account_id.as_deref().unwrap();
+            let queue_id   = cf_queue_id.as_deref().unwrap();
+            let token      = cf_token.as_deref().unwrap();
 
             tokio::select! {
-                _ = &mut rx => {
-                    log::info!("Received cancel signal — stopping client");
-                    is_running_flag.store(false, Ordering::SeqCst);
-                    break;
-                }
-                pull_res = pull_cf_queue_messages(&http_client, account_id, queue_id, token) => {
+                _ = &mut rx => { log::info!("Cancel signal received"); is_running.store(false, Ordering::SeqCst); break; }
+                pull_res = pull_cf_queue_messages(&state.http_client, account_id, queue_id, token) => {
+                    // Re-check the flag after any pull — a closed rx fires instantly and
+                    // could let us sneak past the top-of-loop check.
+                    if !is_running.load(Ordering::SeqCst) { break; }
                     match pull_res {
                         Ok(messages) => {
-                            backoff = Duration::from_secs(2); // Reset backoff on success
-
+                            backoff = Duration::from_secs(2);
                             if messages.is_empty() {
                                 tokio::select! {
                                     _ = tokio::time::sleep(Duration::from_secs(2)) => {}
-                                    _ = &mut rx => {
-                                        is_running_flag.store(false, Ordering::SeqCst);
-                                        break;
-                                    }
+                                    _ = &mut rx => { is_running.store(false, Ordering::SeqCst); break; }
                                 }
+                                if !is_running.load(Ordering::SeqCst) { break; }
                                 continue;
                             }
-
                             log::info!("Pulled {} message(s) from CF Queue", messages.len());
 
                             for msg in messages {
-                                let http_client = Arc::clone(&http_client);
-                                let account_id = account_id.clone();
-                                let queue_id  = queue_id.clone();
-                                let token     = token.clone();
-                                let pm        = Arc::clone(&pm);
-                                let config    = Arc::clone(&config);
-                                let job_store = Arc::clone(&job_store);
-
+                                let state_msg = Arc::clone(&state);
                                 tokio::spawn(async move {
+                                    // Re-derive config strings so no lifetimes leak into the spawn
+                                    let acc   = state_msg.config.cf_account_id.clone().unwrap_or_default();
+                                    let qid   = state_msg.config.cf_queue_id.clone().unwrap_or_default();
+                                    let tok   = state_msg.config.cf_api_token.clone()
+                                        .or_else(|| state_msg.config.printf_key.clone())
+                                        .unwrap_or_default();
+
                                     match parse_message_body(&msg.body) {
                                         Ok(attributes_list) => {
-                                            // ── Deduplication guard ─────────────────────────────
-                                            // If a job with the same file_id is already queued or
-                                            // processing (e.g. due to a duplicate CF Queue delivery),
-                                            // skip re-dispatching it to prevent double prints.
+                                            // Deduplication: skip jobs already queued or processing
                                             let mut to_dispatch = Vec::new();
                                             {
-                                                let store = job_store.lock().await;
+                                                let store = state_msg.job_store.lock().await;
                                                 for attr in &attributes_list {
                                                     if let Some(existing) = store.get(&attr.file_id) {
                                                         let s = existing.status.to_lowercase();
                                                         if s == "queued" || s == "processing" {
-                                                            log::warn!(
-                                                                "Skipping duplicate message for \
-                                                                 file {} (currently {})",
-                                                                attr.file_id, existing.status
-                                                            );
+                                                            log::warn!("Skipping duplicate for {} ({})", attr.file_id, existing.status);
                                                             continue;
                                                         }
                                                     }
@@ -380,119 +338,46 @@ pub async fn start_client(state: Arc<AppState>) -> Result<String, String> {
                                             }
 
                                             if to_dispatch.is_empty() {
-                                                // All items were duplicates — ACK to clean up the queue
-                                                log::info!(
-                                                    "All items in message {} were duplicates; ACKing",
-                                                    msg.id
-                                                );
-                                                let acks = vec![CfLeaseId {
-                                                    lease_id: msg.lease_id,
-                                                    delay_seconds: None,
-                                                }];
-                                                if let Err(e) = ack_cf_queue_messages(
-                                                    &http_client, &account_id, &queue_id, &token,
-                                                    acks, vec![],
-                                                ).await {
-                                                    log::error!(
-                                                        "Failed to ACK deduplicated message {}: {}",
-                                                        msg.id, e
-                                                    );
-                                                }
+                                                log::info!("All items in message {} were duplicates; ACKing", msg.id);
+                                                let acks = vec![CfLeaseId { lease_id: msg.lease_id, delay_seconds: None }];
+                                                let _ = ack_cf_queue_messages(&state_msg.http_client, &acc, &qid, &tok, acks, vec![]).await;
                                                 return;
                                             }
 
-                                            // Mark all jobs as Queued with their lease ID
                                             for attr in &to_dispatch {
-                                                update_job_status_with_lease(
-                                                    &job_store,
-                                                    attr,
-                                                    attr.order.clone(),
-                                                    "Queued",
-                                                    Some(msg.lease_id.clone()),
-                                                )
-                                                .await;
+                                                update_job_status_with_lease(&state_msg, attr, attr.order.clone(), "Queued", Some(msg.lease_id.clone())).await;
                                             }
 
-                                            let success = dispatch_job_batch(
-                                                to_dispatch,
-                                                pm,
-                                                config,
-                                                Arc::clone(&http_client),
-                                                job_store,
-                                            )
-                                            .await;
+                                            let success = dispatch_job_batch(to_dispatch, Arc::clone(&state_msg)).await;
 
                                             let (acks, retries) = if success {
-                                                log::info!(
-                                                    "All jobs in message {} completed; ACKing",
-                                                    msg.id
-                                                );
-                                                (
-                                                    vec![CfLeaseId {
-                                                        lease_id: msg.lease_id,
-                                                        delay_seconds: None,
-                                                    }],
-                                                    vec![],
-                                                )
+                                                log::info!("Message {} succeeded; ACKing", msg.id);
+                                                (vec![CfLeaseId { lease_id: msg.lease_id, delay_seconds: None }], vec![])
                                             } else {
-                                                log::warn!(
-                                                    "One or more jobs in message {} failed; \
-                                                     retrying in 60 s",
-                                                    msg.id
-                                                );
-                                                (
-                                                    vec![],
-                                                    vec![CfLeaseId {
-                                                        lease_id: msg.lease_id,
-                                                        delay_seconds: Some(60),
-                                                    }],
-                                                )
+                                                log::warn!("Message {} had failures; retrying in 60s", msg.id);
+                                                (vec![], vec![CfLeaseId { lease_id: msg.lease_id, delay_seconds: Some(60) }])
                                             };
 
-                                            if let Err(e) = ack_cf_queue_messages(
-                                                &http_client, &account_id, &queue_id, &token,
-                                                acks, retries,
-                                            )
-                                            .await
-                                            {
-                                                log::error!(
-                                                    "Failed to ACK/retry message {}: {}",
-                                                    msg.id, e
-                                                );
+                                            if let Err(e) = ack_cf_queue_messages(&state_msg.http_client, &acc, &qid, &tok, acks, retries).await {
+                                                log::error!("Failed to ACK/retry message {}: {}", msg.id, e);
                                             }
                                         }
                                         Err(err) => {
-                                            log::error!(
-                                                "Could not parse body of message {}: {}",
-                                                msg.id, err
-                                            );
-                                            // ACK unparseable messages so they don't loop forever
-                                            let acks = vec![CfLeaseId {
-                                                lease_id: msg.lease_id,
-                                                delay_seconds: None,
-                                            }];
-                                            let _ = ack_cf_queue_messages(
-                                                &http_client, &account_id, &queue_id, &token,
-                                                acks, vec![],
-                                            )
-                                            .await;
+                                            log::error!("Cannot parse message {}: {}", msg.id, err);
+                                            let acks = vec![CfLeaseId { lease_id: msg.lease_id, delay_seconds: None }];
+                                            let _ = ack_cf_queue_messages(&state_msg.http_client, &acc, &qid, &tok, acks, vec![]).await;
                                         }
                                     }
                                 });
                             }
                         }
                         Err(err) => {
-                            log::error!(
-                                "CF Queue pull error: {} — retrying in {:?}",
-                                err, backoff
-                            );
+                            log::error!("CF Queue pull error: {} — retrying in {:?}", err, backoff);
                             tokio::select! {
                                 _ = tokio::time::sleep(backoff) => {}
-                                _ = &mut rx => {
-                                    is_running_flag.store(false, Ordering::SeqCst);
-                                    break;
-                                }
+                                _ = &mut rx => { is_running.store(false, Ordering::SeqCst); break; }
                             }
+                            if !is_running.load(Ordering::SeqCst) { break; }
                             backoff = (backoff * 2).min(Duration::from_secs(60));
                         }
                     }
@@ -501,103 +386,108 @@ pub async fn start_client(state: Arc<AppState>) -> Result<String, String> {
         }
 
         log::info!("printf client loop exited");
-        is_running_flag.store(false, Ordering::SeqCst);
+        is_running.store(false, Ordering::SeqCst);
     });
 
     Ok("Client started".to_string())
 }
 
-/// Signals the background polling loop to stop gracefully.
 pub async fn stop_client(state: Arc<AppState>) -> Result<String, String> {
     if !state.is_running.load(Ordering::SeqCst) {
         return Ok("Client is not running".to_string());
     }
-
     state.is_running.store(false, Ordering::SeqCst);
-    if let Some(tx) = state.cancel_tx.lock().await.take() {
-        let _ = tx.send(());
-    }
-
-    log::info!("Stop signal sent to client loop");
+    if let Some(tx) = state.cancel_tx.lock().await.take() { let _ = tx.send(()); }
+    log::info!("Stop signal sent");
     Ok("Client stopped".to_string())
 }
 
-/// Returns all tracked jobs from the job store, sorted by most-recently-updated first.
+/// Returns active jobs plus jobs completed within the last 60 seconds, sorted newest-first.
 ///
-/// # Important
-/// Jobs are returned regardless of whether the client is currently running.
-/// The job store persists for the application lifetime and is always safe to read.
-/// This allows operators to inspect completed, failed, or stuck jobs after stopping the client.
+/// The 60-second grace window ensures the operator can see a job transition to
+/// "Completed" before it disappears from the UI — previously completed jobs
+/// vanished within a single heartbeat tick.
 pub async fn get_jobs(state: Arc<AppState>) -> Vec<JobInfo> {
+    let now = crate::state::current_timestamp_secs();
+    let grace_secs: u64 = 60;
     let store = state.job_store.lock().await;
-    let mut jobs: Vec<JobInfo> = store
-        .values()
-        .filter(|j| j.status.to_lowercase() != "completed")
+    let mut jobs: Vec<JobInfo> = store.values()
+        .filter(|j| {
+            let s = j.status.to_lowercase();
+            if s != "completed" {
+                return true; // always show non-completed
+            }
+            // Keep recently-completed jobs visible for the grace period
+            let updated = j.updated_at.parse::<u64>().unwrap_or(0);
+            now.saturating_sub(updated) < grace_secs
+        })
         .cloned()
         .collect();
     drop(store);
-    jobs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    // Sort numerically by timestamp (not lexicographically)
+    jobs.sort_by(|a, b| {
+        let ta = b.updated_at.parse::<u64>().unwrap_or(0);
+        let tb = a.updated_at.parse::<u64>().unwrap_or(0);
+        ta.cmp(&tb)
+    });
     jobs
 }
 
-// ─── Job re-dispatch ───────────────────────────────────────────────────────────
-
-/// Re-dispatches an existing job to its last-known (or round-robin selected) printer.
+/// Returns all jobs with `status == "completed"` that were completed today (since midnight UTC),
+/// sorted newest-first.
 ///
-/// Used by the "Reprint" button on stuck/failed jobs in the UI.
+/// Uses the existing `job_store` — no additional persistence is required. The store already
+/// survives restarts, so previously-completed jobs from the current calendar day are always
+/// available here even after the app is restarted mid-day.
+pub async fn get_completed_jobs_today(state: Arc<AppState>) -> Vec<JobInfo> {
+    let now = crate::state::current_timestamp_secs();
+    // Compute UTC midnight for today: floor(now / 86400) * 86400
+    let today_start: u64 = (now / 86_400) * 86_400;
+
+    let store = state.job_store.lock().await;
+    let mut jobs: Vec<JobInfo> = store.values()
+        .filter(|j| {
+            if j.status.to_lowercase() != "completed" { return false; }
+            let updated = j.updated_at.parse::<u64>().unwrap_or(0);
+            updated >= today_start
+        })
+        .cloned()
+        .collect();
+    drop(store);
+
+    jobs.sort_by(|a, b| {
+        b.updated_at.parse::<u64>().unwrap_or(0)
+            .cmp(&a.updated_at.parse::<u64>().unwrap_or(0))
+    });
+    jobs
+}
+
+// ─── Job re-dispatch ──────────────────────────────────────────────────────────
+
+/// Reprints a stuck job to the best currently-available printer (round-robin).
+/// Clears `target_printer` so the system picks the right printer rather than
+/// retrying the same possibly-offline one. Always ACKs the CF Queue message
+/// regardless of outcome.
 pub async fn reprint_job(file_id: String, state: Arc<AppState>) -> Result<(), String> {
     let job_info = {
         let store = state.job_store.lock().await;
-        store
-            .get(&file_id)
-            .cloned()
-            .ok_or_else(|| format!("Job {} not found in job store", file_id))?
+        store.get(&file_id).cloned().ok_or_else(|| format!("Job {} not found", file_id))?
     };
 
-    update_job_status(&state.job_store, &job_info.attributes, job_info.order_id.clone(), "Queued")
-        .await;
+    let mut attributes = job_info.attributes.clone();
+    attributes.target_printer = None; // let round-robin pick the best available printer
+    update_job_status(&state, &attributes, job_info.order_id.clone(), "Queued").await;
+    let success = dispatch_job_batch(vec![attributes], Arc::clone(&state)).await;
 
-    let success = dispatch_job_batch(
-        vec![job_info.attributes.clone()],
-        Arc::clone(&state.printer_manager),
-        Arc::clone(&state.config),
-        Arc::clone(&state.http_client),
-        Arc::clone(&state.job_store),
-    )
-    .await;
+    // Always ACK — if it fails again the operator can requeue via the UI
+    ack_lease_if_present(&job_info.lease_id, &state).await;
 
-    if success {
-        log::info!("Reprint of job {} succeeded", file_id);
-        // ACK the original queue message to prevent redelivery
-        if let Some(ref lease_id) = job_info.lease_id {
-            if let (Some(account_id), Some(queue_id), Some(token)) = (
-                state.config.cf_account_id.clone(),
-                state.config.cf_queue_id.clone(),
-                state.config.cf_api_token.clone().or_else(|| state.config.printf_key.clone()),
-            ) {
-                let acks = vec![CfLeaseId {
-                    lease_id: lease_id.clone(),
-                    delay_seconds: None,
-                }];
-                if let Err(e) = ack_cf_queue_messages(
-                    &state.http_client, &account_id, &queue_id, &token, acks, vec![],
-                )
-                .await
-                {
-                    log::error!("Failed to ACK reprint job {}: {}", file_id, e);
-                }
-            }
-        }
-    }
-
+    if !success { log::warn!("Reprint of {} failed — operator action required", file_id); }
     Ok(())
 }
 
-/// Re-queues a stuck job to a different (operator-selected) printer.
-///
-/// Attempts to cancel the old IPP job first as a best-effort resource cleanup.
-/// Cancellation failure is logged but never blocks the requeue — the old job
-/// may already be finished or the printer may be unreachable.
+/// Requeues a stuck job to a specific printer chosen by the operator.
+/// Cancels the old CUPS job first (best-effort). Always ACKs the CF Queue message.
 pub async fn requeue_to_printer(
     file_id: String,
     new_printer_name: String,
@@ -605,71 +495,39 @@ pub async fn requeue_to_printer(
 ) -> Result<(), String> {
     let mut job_info = {
         let store = state.job_store.lock().await;
-        store
-            .get(&file_id)
-            .cloned()
-            .ok_or_else(|| format!("Job {} not found in job store", file_id))?
+        store.get(&file_id).cloned().ok_or_else(|| format!("Job {} not found", file_id))?
     };
 
-    // ── Best-effort: cancel the old CUPS job to free printer resources ──────
-    if let (Some(old_job_id), Some(ref old_printer)) = (
-        job_info.ipp_job_id,
-        job_info.attributes.target_printer.clone(),
-    ) {
+    // Cancel old CUPS job (best-effort — printer may already be offline)
+    if let (Some(old_job_id), Some(ref old_printer)) = (job_info.ipp_job_id, job_info.attributes.target_printer.clone()) {
         let creds = get_cups_creds(&state.config);
-        match crate::printer::client::cancel_ipp_job(old_printer, old_job_id, creds).await {
-            Ok(()) => {
-                log::info!(
-                    "Cancelled old CUPS job {} on {} before requeue",
-                    old_job_id, old_printer
-                );
-            }
-            Err(e) => {
-                // Not fatal — the job may already be completed or the printer offline.
-                // We proceed with the requeue regardless.
-                log::warn!(
-                    "Could not cancel old CUPS job {} on {}: {} — proceeding with requeue",
-                    old_job_id, old_printer, e
-                );
-            }
+        if let Err(e) = crate::printer::client::cancel_ipp_job(old_printer, old_job_id, creds).await {
+            log::warn!("Could not cancel old CUPS job {} on {}: {}", old_job_id, old_printer, e);
         }
     }
 
     job_info.attributes.target_printer = Some(new_printer_name.clone());
-    update_job_status(&state.job_store, &job_info.attributes, job_info.order_id.clone(), "Queued")
-        .await;
+    update_job_status(&state, &job_info.attributes, job_info.order_id.clone(), "Queued").await;
+    let success = dispatch_job_batch(vec![job_info.attributes.clone()], Arc::clone(&state)).await;
 
-    let success = dispatch_job_batch(
-        vec![job_info.attributes.clone()],
-        Arc::clone(&state.printer_manager),
-        Arc::clone(&state.config),
-        Arc::clone(&state.http_client),
-        Arc::clone(&state.job_store),
-    )
-    .await;
+    ack_lease_if_present(&job_info.lease_id, &state).await;
 
-    if success {
-        log::info!("Requeue of job {} to {} succeeded", file_id, new_printer_name);
-        if let Some(ref lease_id) = job_info.lease_id {
-            if let (Some(account_id), Some(queue_id), Some(token)) = (
-                state.config.cf_account_id.clone(),
-                state.config.cf_queue_id.clone(),
-                state.config.cf_api_token.clone().or_else(|| state.config.printf_key.clone()),
-            ) {
-                let acks = vec![CfLeaseId {
-                    lease_id: lease_id.clone(),
-                    delay_seconds: None,
-                }];
-                if let Err(e) = ack_cf_queue_messages(
-                    &state.http_client, &account_id, &queue_id, &token, acks, vec![],
-                )
-                .await
-                {
-                    log::error!("Failed to ACK requeued job {}: {}", file_id, e);
-                }
-            }
+    if !success { log::warn!("Requeue of {} to {} failed — operator action required", file_id, new_printer_name); }
+    Ok(())
+}
+
+/// ACKs the CF Queue message for a job's lease ID if one is recorded.
+async fn ack_lease_if_present(lease_id: &Option<String>, state: &Arc<AppState>) {
+    let Some(lid) = lease_id else { return; };
+    let (acc, qid, tok) = (
+        state.config.cf_account_id.clone(),
+        state.config.cf_queue_id.clone(),
+        state.config.cf_api_token.clone().or_else(|| state.config.printf_key.clone()),
+    );
+    if let (Some(acc), Some(qid), Some(tok)) = (acc, qid, tok) {
+        let acks = vec![CfLeaseId { lease_id: lid.clone(), delay_seconds: None }];
+        if let Err(e) = ack_cf_queue_messages(&state.http_client, &acc, &qid, &tok, acks, vec![]).await {
+            log::error!("Failed to ACK lease {}: {}", lid, e);
         }
     }
-
-    Ok(())
 }

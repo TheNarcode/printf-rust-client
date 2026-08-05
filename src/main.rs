@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -27,11 +26,6 @@ pub mod state;
 pub mod types;
 pub mod ui;
 
-// Keep the old ipp module declaration alive as a tombstone so Rust doesn't
-// complain about missing files during the transition build.
-// All functionality has moved to printer::client, printer::pdf, and printer::manager.
-#[allow(dead_code)]
-pub mod ipp;
 
 fn main() {
     // ── Logging setup ─────────────────────────────────────────────────────────
@@ -92,13 +86,30 @@ fn main() {
             .expect("Failed to build HTTP client"),
     );
 
+    // ── Job store — load persisted state ──────────────────────────────────────
+    // The store is persisted to disk on every status transition so that jobs
+    // survive an app restart and CF Queue re-deliveries cannot cause double-prints.
+    let job_store_path = dirs::data_local_dir()
+        .expect("Cannot determine local data dir")
+        .join("printf")
+        .join("jobs.json");
+
+    // Ensure the parent directory exists (the logs dir creation above covers this,
+    // but be explicit so the job store works even without logging).
+    if let Some(parent) = job_store_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let initial_jobs = crate::queue::dispatch::load_job_store(&job_store_path);
+
     let app_state = Arc::new(AppState {
         config,
         http_client,
         is_running:      Arc::new(AtomicBool::new(false)),
         cancel_tx:       Mutex::new(None),
         printer_manager: Arc::new(Mutex::new(None)),
-        job_store:       Arc::new(Mutex::new(HashMap::new())),
+        job_store:       Arc::new(Mutex::new(initial_jobs)),
+        job_store_path,
     });
 
     // ── Window / icon setup ───────────────────────────────────────────────────
