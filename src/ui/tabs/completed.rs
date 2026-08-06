@@ -1,16 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
-
 use chrono::{Local, TimeZone};
 use dioxus::prelude::*;
-
 use crate::queue::dispatch::{get_completed_jobs_today, reprint_job};
 use crate::state::AppState;
 use crate::types::{ColorMode, JobInfo};
 
-/// The Completed tab. Shows all print jobs that were completed today (since midnight UTC),
-/// sourced from the local `job_store`. Each card includes a Reprint button so the operator
-/// can resubmit any job without re-receiving it from the queue.
 #[component]
 pub fn CompletedTab(
     mut completed_jobs: Signal<Vec<JobInfo>>,
@@ -105,8 +100,6 @@ pub fn CompletedTab(
                                             let color_str  = if a.color == ColorMode::Color { "Color" } else { "B&W" };
                                             let copies_num = a.copies.parse::<i32>().unwrap_or(1);
                                             let num_up     = a.number_up.parse::<i32>().unwrap_or(1);
-
-                                            // Format completed time in 12-hour clock (e.g. "05:48 PM")
                                             let time_str = {
                                                 let secs = job.updated_at.parse::<i64>().unwrap_or(0);
                                                 if let Some(dt) = Local.timestamp_opt(secs, 0).single() {

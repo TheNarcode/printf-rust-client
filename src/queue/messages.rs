@@ -1,19 +1,10 @@
 use base64::Engine;
-
 use crate::types::{
     ApiOrder, CfAckRequest, CfLeaseId, CfQueueMessage, CfQueuePullRequest, CfQueuePullResponse,
     PrintAttributes,
 };
 
-// ─── Body parsing ──────────────────────────────────────────────────────────────
 
-/// Parses a raw `&str` payload into a list of `PrintAttributes`.
-///
-/// Tries, in order:
-/// 1. `ApiOrder` (single)
-/// 2. `Vec<ApiOrder>`
-/// 3. `Vec<PrintAttributes>`
-/// 4. `PrintAttributes` (single)
 fn parse_body_str(s: &str) -> Result<Vec<PrintAttributes>, String> {
     if let Ok(order) = serde_json::from_str::<ApiOrder>(s) {
         if !order.files.is_empty() {
@@ -38,17 +29,9 @@ fn parse_body_str(s: &str) -> Result<Vec<PrintAttributes>, String> {
     Err(format!("Could not interpret message body string as PrintAttributes: {}", s))
 }
 
-/// Parses the `body` field of a Cloudflare Queue message into a list of `PrintAttributes`.
-///
-/// Handles:
-/// - Base64-encoded JSON strings (CF Queue default encoding)
-/// - Raw JSON strings
-/// - JSON objects (single `ApiOrder` or `PrintAttributes`)
-/// - JSON arrays (multiple orders or attributes)
 pub fn parse_message_body(body: &serde_json::Value) -> Result<Vec<PrintAttributes>, String> {
     match body {
         serde_json::Value::String(s) => {
-            // Attempt base64 decode first — CF Queues encode the body by default
             if let Ok(decoded_bytes) =
                 base64::engine::general_purpose::STANDARD.decode(s.as_bytes())
             {
@@ -58,7 +41,6 @@ pub fn parse_message_body(body: &serde_json::Value) -> Result<Vec<PrintAttribute
                     }
                 }
             }
-            // Fall back to treating the string as plain JSON
             parse_body_str(s)
         }
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
@@ -91,12 +73,6 @@ pub fn parse_message_body(body: &serde_json::Value) -> Result<Vec<PrintAttribute
     }
 }
 
-// ─── CF Queue API ──────────────────────────────────────────────────────────────
-
-/// Pulls a batch of up to 10 messages from the Cloudflare Queue.
-///
-/// Messages have a 180-second visibility timeout — they will reappear in the queue
-/// if not ACKed within that window.
 pub async fn pull_cf_queue_messages(
     http_client: &reqwest::Client,
     account_id: &str,
@@ -141,10 +117,6 @@ pub async fn pull_cf_queue_messages(
     Ok(pull_resp.result.map(|r| r.messages).unwrap_or_default())
 }
 
-/// Acknowledges (permanently removes) or retries (re-enqueues) Cloudflare Queue messages.
-///
-/// - Items in `acks`    are permanently removed from the queue.
-/// - Items in `retries` are requeued with a delay of `delay_seconds` seconds.
 pub async fn ack_cf_queue_messages(
     http_client: &reqwest::Client,
     account_id: &str,

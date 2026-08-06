@@ -1,7 +1,5 @@
 use crate::types::{ColorMode, Printer, PrinterProperties};
 
-/// Manages the in-process set of known printers and distributes jobs using
-/// round-robin load balancing, independently per color mode.
 pub struct PrinterManager {
     printers: Vec<Printer>,
     color_counter: usize,
@@ -21,8 +19,6 @@ impl PrinterManager {
         self.printers.clone()
     }
 
-    /// Marks a printer as paused or active. Paused printers are excluded from
-    /// future `get_printers_for_order` selections.
     pub fn set_printer_paused(&mut self, uri: &str, paused: bool) {
         if let Some(p) = self.printers.iter_mut().find(|p| p.uri == uri) {
             p.paused = paused;
@@ -32,7 +28,6 @@ impl PrinterManager {
         }
     }
 
-    /// Updates a printer's properties and color mode in the in-memory list.
     pub fn set_printer_properties(
         &mut self,
         name: &str,
@@ -49,14 +44,6 @@ impl PrinterManager {
         }
     }
 
-    /// Selects one color printer and one monochrome printer for an order using
-    /// independent round-robin counters.
-    ///
-    /// Returns `(color_printer, mono_printer, color_media_source, mono_media_source)`.
-    ///
-    /// **Bug 3 fix**: `media_source` is now extracted from each selected printer's
-    /// configured `properties.media_source`. Previously both were always `None`,
-    /// making the "Default Input Tray" setting a no-op.
     pub fn get_printers_for_order(
         &mut self,
         has_color: bool,
@@ -97,8 +84,6 @@ impl PrinterManager {
             None
         };
 
-        // Extract the configured `media-source` from each selected printer's properties
-        // so that `dispatch_job_batch` can pass it to the IPP `media-col` attribute.
         let color_media = color_printer
             .as_ref()
             .and_then(|p| p.properties.as_ref())

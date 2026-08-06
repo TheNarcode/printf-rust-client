@@ -1,15 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-
 use dioxus::prelude::*;
-
 use crate::queue::dispatch::{get_jobs, requeue_to_printer};
 use crate::state::AppState;
 use crate::types::{ColorMode, JobInfo, Printer};
 
-/// The Active Jobs tab. Displays all jobs in the shared job store, sorted by
-/// most-recently-updated first, with status indicators, job-attribute pills,
-/// live status timer spinners, and requeue/reprint actions for failed or stuck jobs.
 #[component]
 pub fn JobsTab(
     jobs: Signal<Vec<JobInfo>>,
@@ -54,7 +49,6 @@ pub fn JobsTab(
                                     let is_stuck = status == "stuck" || status == "failed" || (limit.is_some() && elapsed >= limit.unwrap());
 
                                     let file_id = job.file_id.clone();
-                                    // Extract short order ID (e.g. "50002" from "50002-05082026")
                                     let short_id = match &job.order_id {
                                         Some(o) => o.split('-').next().unwrap_or(o).to_string(),
                                         None    => file_id.split('-').next().unwrap_or(&file_id).to_string(),

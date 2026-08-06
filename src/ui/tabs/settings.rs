@@ -1,7 +1,5 @@
 use std::sync::Arc;
-
 use dioxus::prelude::*;
-
 use crate::printer::client::{
     add_appsocket_printer, delete_printer, fetch_printer_properties, get_cups_ppds,
     get_printer_list, pause_printer, save_printer_properties, unpause_printer, CupsPpdModel,
@@ -9,17 +7,10 @@ use crate::printer::client::{
 use crate::state::AppState;
 use crate::types::{ColorMode, Printer, PrinterProperties};
 
-/// The Settings tab. Displays the CUPS printer list with pause/resume and
-/// property editing. Also owns the "Add Printer" and "Edit Properties" modals.
-///
-/// Modals use `position: fixed` so they render on top of all content regardless
-/// of their position in the DOM.
 #[component]
 pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
     let app_state = use_context::<Arc<AppState>>();
     let mut is_refreshing = use_signal(|| false);
-
-    // ── Add-printer modal signals ──────────────────────────────────────────────
     let mut show_add_modal = use_signal(|| false);
     let mut new_name       = use_signal(String::new);
     let mut new_ip         = use_signal(String::new);
@@ -32,8 +23,6 @@ pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
     let mut uploaded_ppd_name  = use_signal(String::new);
     let mut uploaded_ppd_bytes = use_signal(|| None::<Vec<u8>>);
     let mut add_status_msg     = use_signal(String::new);
-
-    // ── Edit-properties modal signals ──────────────────────────────────────────
     let mut editing_printer   = use_signal(|| None::<Printer>);
     let mut edit_media        = use_signal(|| "iso_a4_210x297mm".to_string());
     let mut edit_media_source = use_signal(|| "auto".to_string());
@@ -105,7 +94,6 @@ pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
                                                 }
                                             }
                                             div { style: "display:flex;gap:0.5rem;align-items:center;",
-                                                // Properties button — fetches live attrs then opens modal
                                                 button {
                                                     class: "btn-reprint",
                                                     style: "font-size:0.75rem;padding:0.35rem 0.75rem;",
@@ -133,7 +121,6 @@ pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
                                                     },
                                                     "Properties"
                                                 }
-                                                // Pause / Resume toggle
                                                 button {
                                                     class: if is_paused { "printer-toggle-btn paused" } else { "printer-toggle-btn active" },
                                                     onclick: {
@@ -167,7 +154,6 @@ pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
             }
         }
 
-        // ── Modal: Add New AppSocket Printer ────────────────────────────────────
         if show_add_modal() {
             div { class: "modal-backdrop",
                 onclick: move |_| show_add_modal.set(false),
@@ -372,7 +358,6 @@ pub fn SettingsTab(mut printers: Signal<Vec<Printer>>) -> Element {
             }
         }
 
-        // ── Modal: Edit Printer Properties ─────────────────────────────────────
         if let Some(target_p) = editing_printer() {
             div { class: "modal-backdrop",
                 onclick: move |_| editing_printer.set(None),

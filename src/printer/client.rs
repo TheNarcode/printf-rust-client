@@ -1,16 +1,11 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
-
 use futures::io::Cursor;
 use ipp::prelude::*;
-
 use crate::state::AppState;
 use crate::types::{ColorMode, PrintAttributes, Printer, PrinterProperties};
 
-// --- CUPS credentials ---------------------------------------------------------
-
-/// Returns CUPS credentials if both username and password are configured and non-empty.
 pub fn get_cups_creds(config: &crate::types::Config) -> Option<(&str, &str)> {
     match (&config.cups_username, &config.cups_password) {
         (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => Some((u.as_str(), p.as_str())),
@@ -30,8 +25,6 @@ pub fn format_ipp_uri(path: &str, creds: Option<(&str, &str)>) -> String {
 fn resolve_printer_path(s: &str) -> String {
     if s.starts_with('/') { s.to_string() } else { format!("/printers/{}", s) }
 }
-
-// --- IPP printer list ---------------------------------------------------------
 
 pub async fn get_printer_list(
     state: Arc<AppState>,
@@ -79,8 +72,6 @@ pub async fn get_ipp_printers(
     Ok(printers)
 }
 
-// --- Pause / resume ----------------------------------------------------------
-
 pub async fn pause_printer(printer_uri: String, state: Arc<AppState>)
     -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 {
@@ -89,8 +80,6 @@ pub async fn pause_printer(printer_uri: String, state: Arc<AppState>)
     let uri: Uri = format_ipp_uri(&format!("/printers/{}", path), creds).parse()?;
     let client = AsyncIppClient::builder(uri.clone()).build();
     client.send(IppRequestResponse::new(IppVersion::v2_0(), Operation::PausePrinter, Some(uri))).await?;
-    // Sync the paused state into the in-memory PrinterManager so the job dispatcher
-    // immediately stops selecting this printer without requiring a client restart.
     if let Some(ref mut manager) = *state.printer_manager.lock().await {
         manager.set_printer_paused(&printer_uri, true);
     }
@@ -105,14 +94,11 @@ pub async fn unpause_printer(printer_uri: String, state: Arc<AppState>)
     let uri: Uri = format_ipp_uri(&format!("/printers/{}", path), creds).parse()?;
     let client = AsyncIppClient::builder(uri.clone()).build();
     client.send(IppRequestResponse::new(IppVersion::v2_0(), Operation::ResumePrinter, Some(uri))).await?;
-    // Sync the resumed state into the in-memory PrinterManager.
     if let Some(ref mut manager) = *state.printer_manager.lock().await {
         manager.set_printer_paused(&printer_uri, false);
     }
     Ok(())
 }
-
-// --- Printer properties -------------------------------------------------------
 
 pub async fn fetch_printer_properties(printer_name: &str, state: Arc<AppState>) -> (PrinterProperties, ColorMode) {
     fetch_printer_properties_via_ipp(printer_name, get_cups_creds(&state.config)).await
@@ -181,8 +167,6 @@ pub(crate) async fn save_printer_properties_via_ipp(name: &str, props: &PrinterP
         Err(e) => Err(format!("IPP request failed for {}: {}", name, e)),
     }
 }
-
-// --- PPD queries & add printer ------------------------------------------------
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct CupsPpdModel { pub ppd_name: String, pub description: String }
@@ -259,8 +243,6 @@ pub(crate) async fn add_appsocket_printer_via_ipp(name: &str, ip: &str, port: u1
     }
 }
 
-// --- IPP job cancel & printer delete -----------------------------------------
-
 pub async fn cancel_ipp_job(printer_name_or_path: &str, job_id: i32, creds: Option<(&str, &str)>)
     -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 {
@@ -290,8 +272,6 @@ pub async fn delete_printer(printer_name_or_uri: String, state: Arc<AppState>)
         Err(format!("CUPS error {:?} deleting printer {}", resp.header().status_code(), name).into())
     }
 }
-
-// --- IPP attribute builder ---------------------------------------------------
 
 fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String>) -> Vec<IppAttribute> {
     let mut copies_count = 1i32;
@@ -334,7 +314,6 @@ fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String
     if let Some(src) = media_source {
         attrs.push(IppAttribute::new("media-col", IppValue::Collection(BTreeMap::from([("media-source".to_string(), IppValue::Keyword(src))]))));
     }
-    // Duplex vendor attributes for Kyocera/Konica-Minolta
     match attributes.sides.as_str() {
         "two-sided-short-edge" => {
             attrs.push(IppAttribute::new("BindEdge", IppValue::Keyword("Top".to_string())));
@@ -353,24 +332,14 @@ fn build_ipp_attributes(attributes: PrintAttributes, media_source: Option<String
     attrs
 }
 
-// --- Core print job ----------------------------------------------------------
-
-/// Downloads a file from S3, applies PDF processing (page slicing and order-ID
-/// footer/cover overlay), submits to CUPS, and polls for completion.
-///
-/// Uses `crate::api::notify_webhook` on success, which falls back to
-/// `{base_url}/webhook/notify` when no explicit webhook_url is configured.
 pub async fn print_job(
     printer_uri: Uri,
     printer_name: String,
     mut attributes: PrintAttributes,
     media_source: Option<String>,
-    state: Arc<AppState>,
+    state: Arc<AppState>
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // 1. Download
-    let raw_bytes = crate::api::download_file(&attributes.file_id, &state).await?;
-
-    // 2. Page range slicing
+    let raw_bytes = crate::api::download_file
     let sliced = if !attributes.page_ranges.trim().is_empty() {
         match crate::printer::pdf::slice_pdf_bytes(&raw_bytes, &attributes.page_ranges) {
             Ok(s) => { attributes.page_ranges = String::new(); s }
@@ -378,19 +347,16 @@ pub async fn print_job(
         }
     } else { raw_bytes };
 
-    // 3. Footer / cover-page
     let final_bytes = match crate::printer::pdf::process_pdf_footer(&sliced, &attributes) {
         Ok(b) => b,
         Err(e) => { log::warn!("PDF footer processing failed ({}); using sliced bytes", e); sliced }
     };
 
-    // 4. Submit to CUPS
     let payload = IppPayload::new_async(Cursor::new(final_bytes));
     let op = IppOperationBuilder::print_job(printer_uri.clone(), payload)
         .attributes(build_ipp_attributes(attributes.clone(), media_source))
         .build();
     let resp = AsyncIppClient::new(printer_uri.clone()).send(op).await?;
-
     let job_id = resp.attributes()
         .groups_of(DelimiterTag::JobAttributes).next()
         .and_then(|g| g.attributes().get("job-id"))
@@ -400,7 +366,6 @@ pub async fn print_job(
     log::info!("Job {} accepted by CUPS (IPP #{}) — polling...", attributes.file_id, job_id);
     { let mut s = state.job_store.lock().await; if let Some(i) = s.get_mut(&attributes.file_id) { i.ipp_job_id = Some(job_id); } }
 
-    // 5. Poll until completion or timeout
     let ipp_client = AsyncIppClient::new(printer_uri.clone());
     let mut pending_secs = 0u32;
     let mut proc_stopped_secs = 0u32;

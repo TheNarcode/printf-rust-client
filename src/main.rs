@@ -4,13 +4,10 @@ use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
-
 use dioxus::desktop::{Config as DesktopConfig, WindowBuilder};
-
 use ftail::Ftail;
 use log::LevelFilter;
 use tokio::sync::Mutex;
-
 use crate::config::{get_config_path, read_config};
 use crate::constants::BASE_URL;
 use crate::state::AppState;
@@ -26,9 +23,7 @@ pub mod state;
 pub mod types;
 pub mod ui;
 
-
 fn main() {
-    // ── Logging setup ─────────────────────────────────────────────────────────
     let logs_dir = dirs::data_local_dir()
         .expect("Cannot determine local data dir")
         .join("printf")
@@ -48,7 +43,6 @@ fn main() {
 
     log::info!("printf dioxus client starting (v{})", env!("CARGO_PKG_VERSION"));
 
-    // ── Config loading ─────────────────────────────────────────────────────────
     let config = match read_config() {
         Ok(c) => Arc::new(c),
         Err(e) => {
@@ -67,17 +61,6 @@ fn main() {
         }
     };
 
-    // ── HTTP client — Bug 5 fix ────────────────────────────────────────────────
-    // A single shared reqwest::Client is used for all outbound HTTP throughout
-    // the application's lifetime.
-    //
-    // Timeouts are set here at construction so they apply globally:
-    //   - connection_timeout: how long to wait for a TCP connection to be established
-    //   - timeout:            total request timeout (headers + body download)
-    //
-    // 120 s total covers even large (50–100 page) colour PDFs being downloaded
-    // over a typical local/campus network. Adjust upward if your S3 endpoint is
-    // significantly slower or files are routinely larger.
     let http_client = Arc::new(
         reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -86,16 +69,11 @@ fn main() {
             .expect("Failed to build HTTP client"),
     );
 
-    // ── Job store — load persisted state ──────────────────────────────────────
-    // The store is persisted to disk on every status transition so that jobs
-    // survive an app restart and CF Queue re-deliveries cannot cause double-prints.
     let job_store_path = dirs::data_local_dir()
         .expect("Cannot determine local data dir")
         .join("printf")
         .join("jobs.json");
 
-    // Ensure the parent directory exists (the logs dir creation above covers this,
-    // but be explicit so the job store works even without logging).
     if let Some(parent) = job_store_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -112,7 +90,6 @@ fn main() {
         job_store_path,
     });
 
-    // ── Window / icon setup ───────────────────────────────────────────────────
     let icon_bytes = include_bytes!("../icons/icon.png");
     let window_icon = match image::load_from_memory(icon_bytes) {
         Ok(img) => {
@@ -141,7 +118,6 @@ fn main() {
         .with_window(window_builder)
         .with_menu(None);
 
-    // ── Launch ────────────────────────────────────────────────────────────────
     dioxus::LaunchBuilder::desktop()
         .with_cfg(desktop_config)
         .with_context(app_state)

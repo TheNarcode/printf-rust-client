@@ -1,16 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
-
 use dioxus::prelude::*;
-
 use crate::api::{get_completed_orders, mark_order_collected};
 use crate::state::AppState;
 use crate::types::ApiOrder;
 
-/// The Pickup tab. Shows orders that are paid/printed and ready for customer collection
-/// (API status != 3). The operator clicks "Mark Collected" when the customer picks up.
-///
-/// Orders disappear automatically on next refresh once collected (status becomes 3).
 #[component]
 pub fn PickupTab(
     mut completed_orders: Signal<Vec<ApiOrder>>,

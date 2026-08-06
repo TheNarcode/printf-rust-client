@@ -2,10 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-
 use dioxus::desktop::use_window;
 use dioxus::prelude::*;
-
 use crate::api::{get_completed_orders, get_stats};
 use crate::printer::client::get_printer_list;
 use crate::queue::dispatch::{get_completed_jobs_today, get_jobs, start_client, stop_client};
@@ -19,7 +17,6 @@ use crate::ui::tabs::{
     stats::StatsTab,
 };
 
-/// The five top-level navigation tabs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Tab {
     Jobs,
@@ -29,27 +26,21 @@ pub enum Tab {
     Settings,
 }
 
-/// Root Dioxus component. Owns all application-level reactive signals and
-/// drives the background polling loop.
 #[component]
 pub fn App() -> Element {
     let window    = use_window();
     let app_state = use_context::<Arc<AppState>>();
-
-    // ── Top-level signals ──────────────────────────────────────────────────────
     let mut is_running       = use_signal(|| app_state.is_running.load(Ordering::SeqCst));
     let mut active_tab       = use_signal(|| Tab::Jobs);
     let mut jobs             = use_signal(Vec::<JobInfo>::new);
     let mut printers         = use_signal(Vec::<Printer>::new);
-    let mut completed_orders = use_signal(Vec::<ApiOrder>::new);  // Pickup tab (API)
-    let mut completed_jobs   = use_signal(Vec::<JobInfo>::new);   // Completed tab (local store)
+    let mut completed_orders = use_signal(Vec::<ApiOrder>::new);  
+    let mut completed_jobs   = use_signal(Vec::<JobInfo>::new);   
     let completed_search     = use_signal(String::new);
     let selected_month       = use_signal(|| "current".to_string());
     let mut stats_json       = use_signal(|| serde_json::Value::Null);
     let mut now_secs         = use_signal(current_timestamp_secs);
     let mut selected_requeue_printers = use_signal(HashMap::<String, String>::new);
-
-    // ── Initial printer fetch ──────────────────────────────────────────────────
     let state_init = app_state.clone();
     use_future(move || {
         let state = state_init.clone();
@@ -60,7 +51,6 @@ pub fn App() -> Element {
         }
     });
 
-    // ── 1-second heartbeat: clock, is_running flag, job list ──────────────────
     let state_timer = app_state.clone();
     use_future(move || {
         let state = state_timer.clone();
@@ -73,7 +63,6 @@ pub fn App() -> Element {
                     is_running.set(running);
                 }
                 let current_jobs = get_jobs(state.clone()).await;
-                // Prune stale printer selections for jobs no longer tracked
                 {
                     let live_ids: std::collections::HashSet<String> =
                         current_jobs.iter().map(|j| j.file_id.clone()).collect();
@@ -91,7 +80,6 @@ pub fn App() -> Element {
         }
     });
 
-    // ── Tab-change side effects: load tab-specific data ────────────────────────
     let state_tab = app_state.clone();
     use_effect(move || {
         let tab   = active_tab();
@@ -143,14 +131,10 @@ pub fn App() -> Element {
         style { {include_str!("../../ui/styles.css")} }
         div { class: "app-container",
 
-            // ══════════════════════════════════════════════════════════════════
-            // LEFT SIDEBAR NAVIGATION
-            // ══════════════════════════════════════════════════════════════════
             aside { class: "app-sidebar",
                 div { class: "sidebar-nav-container",
                     div { class: "sidebar-nav-title", "Menu" }
 
-                    // 1. Jobs Tab
                     button {
                         class: if active_tab() == Tab::Jobs { "sidebar-nav-item active" } else { "sidebar-nav-item" },
                         onclick: move |_| active_tab.set(Tab::Jobs),
@@ -172,7 +156,6 @@ pub fn App() -> Element {
                         }
                     }
 
-                    // 2. Stats Tab
                     button {
                         class: if active_tab() == Tab::Stats { "sidebar-nav-item active" } else { "sidebar-nav-item" },
                         onclick: move |_| active_tab.set(Tab::Stats),
@@ -189,7 +172,6 @@ pub fn App() -> Element {
                         }
                     }
 
-                    // 3. Completed Tab (local job store — today's printed jobs)
                     button {
                         class: if active_tab() == Tab::Completed { "sidebar-nav-item active" } else { "sidebar-nav-item" },
                         onclick: move |_| active_tab.set(Tab::Completed),
@@ -205,7 +187,6 @@ pub fn App() -> Element {
                         }
                     }
 
-                    // 4. Pickup Tab (API — ready-for-customer-pickup orders)
                     button {
                         class: if active_tab() == Tab::Pickup { "sidebar-nav-item active" } else { "sidebar-nav-item" },
                         onclick: move |_| active_tab.set(Tab::Pickup),
@@ -222,7 +203,6 @@ pub fn App() -> Element {
                         }
                     }
 
-                    // 5. Settings Tab
                     button {
                         class: if active_tab() == Tab::Settings { "sidebar-nav-item active" } else { "sidebar-nav-item" },
                         onclick: move |_| active_tab.set(Tab::Settings),
@@ -240,11 +220,7 @@ pub fn App() -> Element {
                 }
             }
 
-            // ══════════════════════════════════════════════════════════════════
-            // RIGHT MAIN CONTENT AREA
-            // ══════════════════════════════════════════════════════════════════
             div { class: "app-body",
-                // Top Draggable Window Bar
                 header {
                     class: "top-title-bar",
                     onmousedown: move |_| { window_drag_topbar.drag(); },
@@ -282,7 +258,6 @@ pub fn App() -> Element {
                     }
                 }
 
-                // Main Tab View Area
                 main { class: "main-content",
                     match active_tab() {
                         Tab::Jobs => rsx! {

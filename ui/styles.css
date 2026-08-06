@@ -1,58 +1,36 @@
-/* ============================================================
-   printf — Zinc Light Mode Design System with Desktop Sidebar
-   ============================================================
-   Design System Tokens (Tailwind Zinc Palette):
-   - Zinc-50:  hsl(240, 5%, 98%) (#fafafa) -> Main content background
-   - Zinc-100: hsl(240, 5%, 96%) (#f4f4f5) -> Sidebar / Panel background
-   - Zinc-200: hsl(240, 6%, 90%) (#e4e4e7) -> Borders / Dividers
-   - Zinc-300: hsl(240, 5%, 84%) (#d4d4d8) -> Hover borders
-   - Zinc-400: hsl(240, 5%, 65%) (#a1a1aa) -> Placeholders / Dim text
-   - Zinc-500: hsl(240, 4%, 46%) (#71717a) -> Muted text / Subtitles
-   - Zinc-700: hsl(240, 5%, 26%) (#3f3f46) -> Body copy
-   - Zinc-800: hsl(240, 4%, 16%) (#27272a) -> Hover state primary
-   - Zinc-900: hsl(240, 6%, 10%) (#18181b) -> Dark text & Primary buttons
-   ============================================================ */
-
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
-    /* Surfaces */
-    --bg-app:       hsl(240, 5%, 96%);     /* Zinc-100 */
-    --bg-sidebar:   hsl(240, 5%, 96%);     /* Zinc-100 */
-    --bg-base:      hsl(240, 5%, 98%);     /* Zinc-50 */
-    --bg-surface:   #ffffff;               /* Pure White Cards */
-    --bg-raised:    hsl(240, 5%, 92%);     /* Zinc-200 hover */
-    --bg-nav-active: #ffffff;              /* White active nav card */
+    --bg-app:       hsl(240, 5%, 96%);     
+    --bg-sidebar:   hsl(240, 5%, 96%);    
+    --bg-base:      hsl(240, 5%, 98%);     
+    --bg-surface:   #ffffff;               
+    --bg-raised:    hsl(240, 5%, 92%);    
+    --bg-nav-active: #ffffff;             
 
-    /* Text */
-    --text-main:    hsl(240, 6%, 10%);     /* Zinc-900 */
-    --text-body:    hsl(240, 5%, 26%);     /* Zinc-700 */
-    --text-muted:   hsl(240, 4%, 46%);     /* Zinc-500 */
-    --text-dim:     hsl(240, 5%, 65%);     /* Zinc-400 */
+    --text-main:    hsl(240, 6%, 10%);     
+    --text-body:    hsl(240, 5%, 26%);    
+    --text-muted:   hsl(240, 4%, 46%);   
+    --text-dim:     hsl(240, 5%, 65%);    
 
-    /* Borders */
-    --border:       hsl(240, 6%, 90%);     /* Zinc-200 */
-    --border-mid:   hsl(240, 5%, 84%);     /* Zinc-300 */
-    --border-focus: hsl(240, 6%, 10%);     /* Zinc-900 focus outline */
+    --border:       hsl(240, 6%, 90%);    
+    --border-mid:   hsl(240, 5%, 84%);    
+    --border-focus: hsl(240, 6%, 10%);   
 
-    /* Primary button & brand */
-    --primary:      hsl(240, 6%, 10%);     /* Zinc-900 */
-    --primary-hover:hsl(240, 4%, 16%);     /* Zinc-800 */
+    --primary:      hsl(240, 6%, 10%);    
+    --primary-hover:hsl(240, 4%, 16%);     
     --primary-fg:   #ffffff;
 
-    /* Danger action (stop client) */
-    --danger:       hsl(0, 72%, 51%);      /* Red-500 */
-    --danger-hover: hsl(0, 72%, 45%);      /* Red-600 */
+    --danger:       hsl(0, 72%, 51%);     
+    --danger-hover: hsl(0, 72%, 45%);     
     --danger-fg:    #ffffff;
 
-    /* Status indicator colors */
     --status-green: hsl(152, 62%, 38%);
     --status-amber: hsl(38,  92%, 46%);
     --status-blue:  hsl(217, 80%, 52%);
     --status-orange:hsl(24,  88%, 50%);
     --status-red:   hsl(0,   72%, 55%);
 
-    /* Shadows & Radii */
     --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.04);
     --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.06), 0 1px 2px rgb(0 0 0 / 0.04);
     --shadow-md: 0 4px 10px rgb(0 0 0 / 0.06), 0 2px 4px rgb(0 0 0 / 0.03);
@@ -67,7 +45,6 @@
     --font: 'Inter', system-ui, -apple-system, sans-serif;
 }
 
-/* ── Reset ──────────────────────────────────────────────────── */
 *, *::before, *::after {
     margin: 0;
     padding: 0;
@@ -94,9 +71,6 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
-/* ══════════════════════════════════════════════════════════════
-   DESKTOP APP LAYOUT (Sidebar + Main Content Area)
-══════════════════════════════════════════════════════════════ */
 .app-container {
     display: flex;
     flex-direction: row;
@@ -106,9 +80,6 @@ body {
     overflow: hidden;
 }
 
-/* ══════════════════════════════════════════════════════════════
-   SIDEBAR (Left Navigation Panel)
-══════════════════════════════════════════════════════════════ */
 .app-sidebar {
     width: 240px;
     height: 100vh;
@@ -121,7 +92,6 @@ body {
     z-index: 50;
 }
 
-/* Sidebar Brand Header */
 .sidebar-header {
     padding: 1.125rem 1.25rem;
     display: flex;
@@ -164,7 +134,6 @@ body {
     font-weight: 500;
 }
 
-/* Sidebar Nav Body */
 .sidebar-nav-container {
     flex: 1;
     padding: 1.25rem 0.75rem;
@@ -220,7 +189,6 @@ body {
     border: 1px solid var(--border);
 }
 
-/* Nav Badge */
 .sidebar-nav-badge {
     font-size: 0.675rem;
     font-weight: 700;
@@ -230,7 +198,6 @@ body {
     border-radius: var(--radius-full);
 }
 
-/* Sidebar Footer (Status & Start/Stop Client) */
 .sidebar-footer {
     padding: 1rem 0.875rem 1.25rem 0.875rem;
     border-top: 1px solid var(--border);
@@ -310,9 +277,6 @@ body {
     transition: all 0.14s var(--ease-ui);
 }
 
-/* ══════════════════════════════════════════════════════════════
-   RIGHT MAIN BODY AREA
-══════════════════════════════════════════════════════════════ */
 .app-body {
     flex: 1;
     display: flex;
@@ -322,7 +286,6 @@ body {
     background: var(--bg-base);
 }
 
-/* Top Window Drag Bar */
 .top-title-bar {
     height: 56px;
     padding: 0 1.75rem;
@@ -365,7 +328,6 @@ body {
     margin: 0 auto;
 }
 
-/* Custom Scrollbar */
 .main-content::-webkit-scrollbar { width: 6px; }
 .main-content::-webkit-scrollbar-track { background: transparent; }
 .main-content::-webkit-scrollbar-thumb { background: var(--border-mid); border-radius: var(--radius-full); }
@@ -394,7 +356,6 @@ body {
     letter-spacing: -0.025em;
 }
 
-/* Job Count Badge */
 .badge-count {
     font-size: 0.8rem;
     font-weight: 700;
@@ -405,9 +366,6 @@ body {
     padding: 0.25rem 0.75rem;
 }
 
-/* ══════════════════════════════════════════════════════════════
-   BUTTONS
-══════════════════════════════════════════════════════════════ */
 .btn {
     display: inline-flex;
     align-items: center;
@@ -494,9 +452,6 @@ body {
     background: hsl(38, 92%, 44%) !important;
 }
 
-/* ══════════════════════════════════════════════════════════════
-   CARDS & TABLES
-══════════════════════════════════════════════════════════════ */
 .jobs-list-container,
 .stats-container,
 .vendor-payable-container {
@@ -645,16 +600,12 @@ body {
     text-align: right;
 }
 
-/* ══════════════════════════════════════════════════════════════
-   EARNINGS & SETTLEMENT STATEMENT
-══════════════════════════════════════════════════════════════ */
 .stats-controls {
     display: flex;
     align-items: center;
     gap: 0.625rem;
 }
 
-/* KPI Summary Cards Grid */
 .kpi-cards-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -692,7 +643,6 @@ body {
     color: var(--status-green);
 }
 
-/* Category Earnings Breakdown Card */
 .earnings-breakdown-card {
     background: var(--bg-surface);
     border: 1px solid var(--border);
@@ -852,7 +802,6 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
-/* Settlement Accordion Card */
 .settlement-accordion-card {
     background: var(--bg-surface);
     border: 1px solid var(--border);
@@ -963,9 +912,6 @@ body {
     font-weight: 700;
 }
 
-/* ══════════════════════════════════════════════════════════════
-   PRINTER SETTINGS
-══════════════════════════════════════════════════════════════ */
 .printer-card {
     display: flex;
     align-items: center;
@@ -1020,9 +966,6 @@ body {
     background: hsl(38, 92%, 44%);
 }
 
-/* ══════════════════════════════════════════════════════════════
-   FORM CONTROLS & MODALS
-══════════════════════════════════════════════════════════════ */
 .custom-select {
     font-family: var(--font);
     font-size: 0.875rem;

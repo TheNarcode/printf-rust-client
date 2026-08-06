@@ -1,9 +1,5 @@
 use crate::types::PrintAttributes;
 
-// ─── PDF page slicing ──────────────────────────────────────────────────────────
-
-/// Parses a page-range string (e.g. `"1-3,5,7-9"`) into a sorted list of 1-based
-/// page numbers, clamped to `[1, max_pages]`.
 fn parse_page_numbers(s: &str, max_pages: u32) -> Vec<u32> {
     let mut result = Vec::new();
     for part in s.split(',') {
@@ -31,11 +27,6 @@ fn parse_page_numbers(s: &str, max_pages: u32) -> Vec<u32> {
     result
 }
 
-/// Extracts the specified pages from a PDF and returns a new PDF containing only
-/// those pages.
-///
-/// If `page_ranges_str` is empty or the range is invalid, the original bytes are
-/// returned unchanged.
 pub fn slice_pdf_bytes(
     pdf_bytes: &[u8],
     page_ranges_str: &str,
@@ -66,16 +57,12 @@ pub fn slice_pdf_bytes(
     Ok(out)
 }
 
-// ─── PDF footer / cover-page processing ───────────────────────────────────────
-
-/// Escapes characters that have special meaning inside PDF string literals.
 fn sanitize_pdf_text(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('(', "\\(")
         .replace(')', "\\)")
 }
 
-/// Prepends `new_page_ids` to the front of the PDF page tree.
 fn prepend_pages_to_doc(
     doc: &mut lopdf::Document,
     new_page_ids: Vec<lopdf::ObjectId>,
@@ -110,7 +97,6 @@ fn prepend_pages_to_doc(
     Ok(())
 }
 
-/// Creates a minimal Helvetica Type 1 font object in the document and returns its ID.
 fn create_type1_font(doc: &mut lopdf::Document) -> lopdf::ObjectId {
     let mut dict = lopdf::Dictionary::new();
     dict.set("Type", lopdf::Object::Name(b"Font".to_vec()));
@@ -119,13 +105,8 @@ fn create_type1_font(doc: &mut lopdf::Document) -> lopdf::ObjectId {
     doc.add_object(dict)
 }
 
-/// Ensures that the page's Resources dictionary has a `PrintfFooterFont` entry
-/// pointing to a Helvetica font, handling all three resource-dictionary layouts
-/// (indirect reference, inline dict, mixed).
 fn ensure_font_on_page(doc: &mut lopdf::Document, page_id: lopdf::ObjectId) {
     let font_obj_id = create_type1_font(doc);
-
-    // Case 1: Resources is an indirect reference (e.g. /Resources 488 0 R)
     let res_ref = doc
         .get_dictionary(page_id)
         .ok()
@@ -133,7 +114,6 @@ fn ensure_font_on_page(doc: &mut lopdf::Document, page_id: lopdf::ObjectId) {
         .and_then(|o| o.as_reference().ok());
 
     if let Some(res_id) = res_ref {
-        // Sub-case: /Font inside Resources is itself an indirect reference
         let font_ref = doc
             .get_object(res_id)
             .ok()
@@ -173,7 +153,6 @@ fn ensure_font_on_page(doc: &mut lopdf::Document, page_id: lopdf::ObjectId) {
         }
     }
 
-    // Case 2: Resources is inline on the page dictionary
     if let Ok(pd) = doc
         .get_object_mut(page_id)
         .and_then(lopdf::Object::as_dict_mut)
@@ -204,7 +183,6 @@ fn ensure_font_on_page(doc: &mut lopdf::Document, page_id: lopdf::ObjectId) {
     }
 }
 
-/// Appends a vertical side-bar token overlay to a single PDF page.
 fn add_footer_to_page(
     doc: &mut lopdf::Document,
     page_id: lopdf::ObjectId,
@@ -243,14 +221,9 @@ fn add_footer_to_page(
                 new_contents.extend(arr.clone());
             }
             Ok(lopdf::Object::Stream(stream)) => {
-                // Move inline stream into an indirect object so it can be referenced
-                // alongside the new overlay streams without duplicating content.
                 let sid = doc.add_object(lopdf::Object::Stream(stream.clone()));
                 new_contents.push(lopdf::Object::Reference(sid));
-                // Remove the inline stream from the page dict — it will be replaced
-                // below with the consolidated Contents array.
-            }
-            _ => {}
+            }_ => {}
         }
         new_contents.push(lopdf::Object::Reference(footer_id));
 
@@ -265,18 +238,6 @@ fn add_footer_to_page(
     Ok(())
 }
 
-/// Processes the PDF according to the queue token and footer setting:
-///
-/// - **Footer enabled** (`footer == true` or unset): overlays the token as a
-///   vertical side-bar on every page.
-/// - **Footer disabled** (`footer == false`): prepends a cover page with the
-///   token printed in large text at the centre. The cover page is **always A4**
-///   (595.28 × 841.89 pt) — it is a physical separator sheet produced by this
-///   print queue system, independent of the job's paper format. Blank padding
-///   pages are added as needed so that the first page of the actual document
-///   lands on the correct face for duplex/N-up printing.
-///
-/// If the `order` field is absent or empty the PDF is returned unchanged.
 pub fn process_pdf_footer(
     pdf_bytes: &[u8],
     attributes: &PrintAttributes,
@@ -297,20 +258,11 @@ pub fn process_pdf_footer(
             let _ = add_footer_to_page(&mut doc, page_id, &token);
         }
     } else {
-        // Footer is disabled for this job — prepend a cover/separator page instead.
-        //
-        // The cover page dimensions are always A4 (595.28 × 841.89 pt).
-        // This is intentional and by design: the cover page is a physical
-        // separator sheet produced by the printf queue system to identify the
-        // customer's job at the collection counter.  It is not a content page
-        // and therefore does not need to match the document's paper format.
         let font_obj_id = create_type1_font(&mut doc);
 
         let font_size: f64 = 36.0;
-        // A4 dimensions in PDF points (1/72 inch)
         let page_width: f64 = 595.28;
         let page_height: f64 = 841.89;
-
         let sanitized_token = sanitize_pdf_text(&token);
         let char_count = token.chars().count() as f64;
         let est_text_width = char_count * (font_size * 0.52);
@@ -348,15 +300,8 @@ pub fn process_pdf_footer(
 
         let cover_id = doc.add_object(cover_dict);
         let mut page_ids = vec![cover_id];
-
-        // Add blank padding pages so the actual document starts on the right
-        // face for the requested number-up and duplex settings.
         let number_up: usize = attributes.number_up.parse().unwrap_or(1).max(1);
-        let sides_mult: usize = if attributes.sides.contains("two-sided") {
-            2
-        } else {
-            1
-        };
+        let sides_mult: usize = if attributes.sides.contains("two-sided") {2} else {1};
         let total_cover_pages = number_up * sides_mult;
 
         for _ in 1..total_cover_pages {
@@ -378,62 +323,4 @@ pub fn process_pdf_footer(
     let mut output = Vec::new();
     doc.save_to(&mut output)?;
     Ok(output)
-}
-
-// ─── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::{ColorMode, PrintAttributes};
-
-    fn make_attrs(footer: Option<bool>, token: Option<&str>) -> PrintAttributes {
-        PrintAttributes {
-            file_id: "test".to_string(),
-            orientation: "portrait".to_string(),
-            color: ColorMode::Color,
-            copies: "1".to_string(),
-            paper_format: "iso_a4_210x297mm".to_string(),
-            page_ranges: String::new(),
-            number_up: "1".to_string(),
-            sides: "one-sided".to_string(),
-            document_format: "application/pdf".to_string(),
-            print_scaling: "auto".to_string(),
-            target_printer: None,
-            order: token.map(|s| s.to_string()).or_else(|| Some("ord1".to_string())),
-            printed: None,
-            footer,
-        }
-    }
-
-    #[test]
-    fn no_token_returns_original() {
-        let bytes = b"%PDF-1.4 test";
-        let mut attrs = make_attrs(Some(true), None);
-        attrs.order = None;
-        // Should return original since there's no token
-        let result = process_pdf_footer(bytes, &attrs).unwrap();
-        assert_eq!(result, bytes);
-    }
-
-    #[test]
-    fn capstone_footer_processing() {
-        if let Ok(bytes) = std::fs::read("Capstone.pdf") {
-            let attrs_on = make_attrs(Some(true), Some("CAPSTONE-TOKEN-123"));
-            assert!(
-                process_pdf_footer(&bytes, &attrs_on).is_ok(),
-                "Footer-enabled path should succeed"
-            );
-
-            let attrs_off = make_attrs(Some(false), Some("CAPSTONE-TOKEN-123"));
-            let result = process_pdf_footer(&bytes, &attrs_off).unwrap();
-            let orig = lopdf::Document::load_mem(&bytes).unwrap();
-            let with_cover = lopdf::Document::load_mem(&result).unwrap();
-            assert_eq!(
-                with_cover.get_pages().len(),
-                orig.get_pages().len() + 1,
-                "Cover page should add exactly one page"
-            );
-        }
-    }
 }

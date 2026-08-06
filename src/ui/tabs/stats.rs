@@ -1,16 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
-
 use dioxus::prelude::*;
-
 use crate::api::get_stats;
 use crate::state::AppState;
 
-/// The Statistics & Settlement tab.
-///
-/// Features 4 KPI summary cards (Total Earnings, B&W Pages, Color Pages, Orders Completed),
-/// primary category cards (Single-Sided & Double-Sided) with smooth click-to-expand color breakdowns,
-/// and an expandable Settlement Due to Printf card showing step-by-step settlement calculations.
+
 #[component]
 pub fn StatsTab(
     mut selected_month: Signal<String>,
@@ -21,7 +15,6 @@ pub fn StatsTab(
     let mut expand_single     = use_signal(|| false);
     let mut expand_double     = use_signal(|| false);
     let mut expand_settlement = use_signal(|| false);
-
     let get_metric = |key: &str, field: &str| -> f64 {
         stats_json()
             .get(key)
@@ -29,50 +22,30 @@ pub fn StatsTab(
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0)
     };
-
     let count_1s_mono  = get_metric("b/w single sided", "pages");
     let count_2s_mono  = get_metric("b/w double sided", "pages");
     let count_1s_color = get_metric("color single sided", "pages");
     let count_2s_color = get_metric("color double sided", "pages");
-
     let price_1s_mono  = count_1s_mono  * 3.0;
     let price_2s_mono  = count_2s_mono  * 2.0;
     let price_1s_color = count_1s_color * 6.0;
     let price_2s_color = count_2s_color * 6.0;
-
     let total_1s_pages = count_1s_mono + count_1s_color;
     let total_2s_pages = count_2s_mono + count_2s_color;
-
     let total_mono_pages  = count_1s_mono + count_2s_mono;
     let total_color_pages = count_1s_color + count_2s_color;
-
-    // Calculation terms:
-    // 1. Base Print Volume Revenue = total_gross
     let total_gross = price_1s_mono + price_2s_mono + price_1s_color + price_2s_color;
-
-    // 2. Customer collects base + 5% convenience fee
     let customer_collected = total_gross * 1.05;
-
-    // 3. Payment Gateway takes 0.5% of total collected
     let gateway_fee = customer_collected * 0.005;
     let net_received = customer_collected - gateway_fee;
-
-    // 4. Amount payable / Settlement Due to Printf = 6.225% of base print volume
     let vendor_payable = total_gross * 0.06225;
-
-    // 5. Operator Net Earnings = net_received - vendor_payable
     let operator_earnings = net_received - vendor_payable;
-
-    // Category earnings calculation (after settlement deduction)
     let earn_1s_mono  = price_1s_mono  * 0.9825;
     let earn_2s_mono  = price_2s_mono  * 0.9825;
     let earn_1s_color = price_1s_color * 0.9825;
     let earn_2s_color = price_2s_color * 0.9825;
-
     let earn_1s_total = earn_1s_mono + earn_1s_color;
     let earn_2s_total = earn_2s_mono + earn_2s_color;
-
-    // Robust calculation for Orders Completed
     let total_jobs = {
         let mut count = 0.0;
         let sj = stats_json();
@@ -109,7 +82,6 @@ pub fn StatsTab(
     rsx! {
         div { class: "page-view active",
             section { class: "section-jobs",
-                // Top Header Toolbar
                 div { class: "section-header", style: "margin-bottom: 1rem;",
                     div { class: "section-header-left",
                         select {
@@ -164,7 +136,6 @@ pub fn StatsTab(
                     }
                 }
 
-                // 1. 4 Summary KPI Cards Grid
                 div { class: "kpi-cards-grid",
                     div { class: "kpi-card",
                         span { class: "kpi-card-label", "Total Earnings" }
@@ -184,14 +155,12 @@ pub fn StatsTab(
                     }
                 }
 
-                // 2. Earnings Breakdown Card (Single-Sided & Double-Sided cards)
                 div { class: "earnings-breakdown-card",
                     div { class: "breakdown-card-header",
                         div { class: "breakdown-card-title", "Earnings Breakdown" }
                     }
                     div { class: "category-accordion-rows-list",
 
-                        // Card 1: Single-Sided Printing
                         div { class: "category-accordion-row",
                             div {
                                 class: "category-main-header",
@@ -235,7 +204,6 @@ pub fn StatsTab(
                             }
                         }
 
-                        // Card 2: Double-Sided Printing
                         div { class: "category-accordion-row",
                             div {
                                 class: "category-main-header",
@@ -282,7 +250,6 @@ pub fn StatsTab(
                     }
                 }
 
-                // 3. Settlement Due to Printf Accordion Card
                 div { class: "settlement-accordion-card",
                     div {
                         class: "settlement-accordion-trigger",

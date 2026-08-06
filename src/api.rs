@@ -1,10 +1,8 @@
 use std::sync::Arc;
-
 use crate::constants::BASE_URL;
 use crate::state::AppState;
 use crate::types::ApiOrder;
 
-/// Helper to get the active base URL from state config, falling back to constant.
 fn get_api_base_url(state: &Arc<AppState>) -> &str {
     if !state.config.base_url.is_empty() {
         &state.config.base_url
@@ -13,13 +11,6 @@ fn get_api_base_url(state: &Arc<AppState>) -> &str {
     }
 }
 
-// ─── File download ────────────────────────────────────────────────────────────
-
-/// Downloads a print file from the configured S3-compatible object store.
-///
-/// Returns the raw file bytes as `Vec<u8>`, ready for PDF processing and
-/// subsequent IPP submission. The `reqwest::Client` already has a timeout
-/// configured at construction time, so no per-request timeout is needed here.
 pub async fn download_file(
     file_id: &str,
     state: &Arc<AppState>,
@@ -52,15 +43,6 @@ pub async fn download_file(
     Ok(bytes.to_vec())
 }
 
-// ─── Webhook notification ──────────────────────────────────────────────────────
-
-/// Fires the configured webhook URL (or defaults to `{base_url}/webhook/notify`)
-/// when a print job completes successfully.
-///
-/// Side effect on printfs server:
-/// 1. Marks file as printed (`printed: true`) in database.
-/// 2. If all files in the order are printed, sets order status = 1 (printed) and
-///    triggers FCM push notification ("Order#... completed") to customer's device.
 pub async fn notify_webhook(
     file_id: &str,
     printer_name: &str,
@@ -99,18 +81,6 @@ pub async fn notify_webhook(
     Ok(())
 }
 
-// ─── printfs API ──────────────────────────────────────────────────────────────
-
-/// Fetches print statistics for the given time window.
-///
-/// `month` must be one of the values the API accepts:
-///   - `"current"` — current calendar month
-///   - `"past"`    — previous calendar month
-///   - `"three"`   — rolling last 3 months
-///   - `"all"` / `None` — all time (no filter applied)
-///
-/// The Cloudflare Worker validates the `month` query param with Zod's
-/// `z.enum(["current","past","three","all"])`. Any other value is rejected (400).
 pub async fn get_stats(
     month: Option<String>,
     state: Arc<AppState>,
@@ -136,11 +106,6 @@ pub async fn get_stats(
         .map_err(|e| format!("Failed to parse stats response: {}", e))
 }
 
-/// Fetches all orders that are paid/printed but have NOT yet been physically
-/// collected by the customer (status != 3).
-///
-/// This is intentionally a "Ready for Pickup" view — once an order is marked
-/// collected it disappears from the list.
 pub async fn get_completed_orders(state: Arc<AppState>) -> Result<Vec<ApiOrder>, String> {
     let base_url = get_api_base_url(&state);
     let url = format!("{}/client/orders", base_url);
@@ -161,7 +126,6 @@ pub async fn get_completed_orders(state: Arc<AppState>) -> Result<Vec<ApiOrder>,
         .into_iter()
         .filter(|o| {
             let status = o.status.unwrap_or(0);
-            // An order is ready for pickup ONLY when status is printed/completed (status 1 or 2) and not yet collected (status 3)
             status != 3 && (status == 1 || status == 2)
         })
         .collect();
@@ -169,10 +133,6 @@ pub async fn get_completed_orders(state: Arc<AppState>) -> Result<Vec<ApiOrder>,
     Ok(filtered)
 }
 
-/// Marks an order as collected (`status = 3`) on the printfs API.
-///
-/// Side effect: the API fires an FCM push notification ("Order#... collected")
-/// to the customer's device.
 pub async fn mark_order_collected(order_id: String, state: Arc<AppState>) -> Result<(), String> {
     let base_url = get_api_base_url(&state);
     let url = format!("{}/client/collect", base_url);
