@@ -339,7 +339,7 @@ pub async fn print_job(
     media_source: Option<String>,
     state: Arc<AppState>
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let raw_bytes = crate::api::download_file
+    let raw_bytes = crate::api::download_file(&attributes.file_id, &state).await?;
     let sliced = if !attributes.page_ranges.trim().is_empty() {
         match crate::printer::pdf::slice_pdf_bytes(&raw_bytes, &attributes.page_ranges) {
             Ok(s) => { attributes.page_ranges = String::new(); s }

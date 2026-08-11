@@ -143,7 +143,6 @@ pub struct CfAckRequest {
     pub retries: Vec<CfLeaseId>,
 }
 
-
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct JobInfo {
